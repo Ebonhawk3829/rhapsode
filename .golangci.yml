@@ -1,0 +1,56 @@
+version: "2"
+
+# High-signal linters only. The goal is catching silent decay — dead code,
+# unused parameters, missed error checks — not enforcing style opinions.
+# Anything this config flags is worth fixing; anything it doesn't is fine.
+
+linters:
+  default: none
+  enable:
+    - staticcheck      # correctness: the go vet+ tier
+    - unused           # unused functions, fields, constants (U1000)
+    - unparam          # parameters that are always the same or ignored
+    - errcheck         # unchecked errors
+    - ineffassign      # assignments that go nowhere
+    - govet            # go vet, kept for parity with CI
+    - misspell         # typos in comments and strings
+    - copyloopvar      # loop-variable capture (pre-Go1.22 bug class)
+    - nolintlint       # nolint directives must be specific and used
+
+  settings:
+    staticcheck:
+      checks:
+        - "all"
+        - "-ST1000"    # package comment placement: existing layout is fine
+        - "-ST1003"    # underscore names in test fixtures are deliberate
+        - "-ST1020"    # comment-on-exported-function style is established
+        - "-ST1021"    # ditto for types
+        - "-ST1022"    # ditto for variables
+    errcheck:
+      # Deliberately-unchecked cleanups. Closing a response body, a test
+      # database, or a transaction rollback on the way out of a function has
+      # no useful error path — there is nothing left to do with the failure.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - os.Remove
+  exclusions:
+    rules:
+      # Tests legitimately ignore errors (the assertion covers the path) and
+      # pass fixed fixtures to helpers.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unparam
+          - misspell
+
+issues:
+  # A fresh finding in old code is still a finding. No new-vs-old split,
+  # which only makes sense during incremental adoption.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt

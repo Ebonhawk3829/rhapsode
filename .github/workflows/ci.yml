@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          # Must be a release built with a Go toolchain that can read the
+          # stdlib export data of the Go version setup-go resolves to. A
+          # prebuilt binary compiled with an older Go cannot typecheck a
+          # newer stdlib ("export data version 5 is greater than maximum
+          # supported version 4"), so a floating "v2.x" here breaks whenever
+          # setup-go's floating "1.27" picks up a Go patch release.
+          version: v2.14

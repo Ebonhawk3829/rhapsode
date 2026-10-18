@@ -1,0 +1,102 @@
+# rhapsode configuration.
+#
+# Copy to rhapsode.yaml and fill in the credentials. Every value shown here is
+# the default, so a minimal file only needs the secrets and the URLs that
+# differ from these.
+
+server:
+  # The UI and API bind here. There is no authentication, so binding a wider
+  # interface exposes full control of the tool.
+  listen: 127.0.0.1:8099
+  # Where the SQLite database lives.
+  data_dir: /data
+
+paths:
+  # Where the downloader writes completed files, as rhapsode sees it. This is
+  # rhapsode's mount of the shared downloads tree: mount the same host
+  # directory the downloaders write into, and the per-transport landings
+  # (slskd-complete/, kt-complete/) resolve under it.
+  downloads: /downloads
+  # Local scratch space for merging and tagging. Must be local block storage:
+  # tone targets local filesystems, not network ones.
+  staging: /staging
+  # The finished library, as rhapsode sees it.
+  library: /library
+
+library:
+  # Audiobookshelf.
+  url: http://100.64.0.1:13378
+  # An ABS API key. A secret — keep it in SOPS, never in the repository.
+  token: ""
+  # The ABS library to check for already-owned titles and to scan after
+  # shelving.
+  library_id: ""
+
+providers:
+  # The self-hosted GraphicAudio scraper. GA releases are full-cast
+  # dramatisations and carry ISBNs, so this is asked first.
+  graphicaudio:
+    url: http://100.64.0.1:8092
+    enabled: true
+  # The public Audible metadata API. Covers the standard-narration releases GA
+  # has not done.
+  audnexus:
+    url: https://api.audnex.us
+    region: us
+    enabled: true
+  # The Audible storefront search, scraped. The only title-to-ASIN discovery
+  # surface: Audnexus is lookup-only, so without this the omnisearch finds
+  # only what the GA scraper indexes.
+  audible:
+    base: https://www.audible.com
+    # Audible geo-redirects and throttles datacentre IPs; from this deployment
+    # the scrape only works routed through the proxy (the same instance
+    # Prowlarr already uses). Empty means direct, for home-server networks.
+    flaresolverr: http://100.64.0.1:8191
+    enabled: true
+
+sources:
+  # The torrent indexer. The .lu domain is the more reliable primary; mirrors
+  # are rotated on failure, not per request.
+  audiobookbay:
+    url: audiobookbay.lu
+    mirrors: [audiobookbay.is]
+    # The challenge-solving proxy, already running for Audible/Prowlarr.
+    # ABB 503s datacentre IPs, so requiring it is deliberate: empty means the
+    # source is off even with a URL.
+    flaresolverr: http://100.64.0.1:8191
+    enabled: true
+  # The Soulseek client, used both as a source and as a grabber.
+  slskd:
+    url: ""
+    api_key: ""
+    enabled: false
+    # The download root is derived, not configured: slskd's download
+    # directory must be the sibling landing <dir of paths.downloads>/slskd-complete
+    # (the standardized layout — slskd.yml `directories.downloads`), and
+    # rhapsode reads the same tree through its own mount of the downloads
+    # directory. Both containers must mount the same host directory at the
+    # same prefix for the translation to hold.
+
+grabbers:
+  transmission:
+    url: http://100.64.0.1:9091/transmission/rpc
+    username: ""
+    password: ""
+    # Where rhapsode's torrents land, as Transmission sees the path. Inside
+    # the shared downloads tree; kishizu scans only anime/ so there is no
+    # collision.
+    dir: /media/downloads/kt-complete
+    # The same host directory as rhapsode sees it. Verification reads the
+    # completed files through rhapsode's own mount, so the mapping between
+    # the two views is spelled out rather than guessed.
+    local_dir: /downloads/kt-complete
+    enabled: true
+
+notify:
+  # Only failures and a single confirmation are sent; progress lives in the UI.
+  ntfy:
+    url: ""
+    topic: ""
+    token: ""
+    enabled: false

@@ -1,0 +1,16 @@
+# Internal spec and migration notes — reference material for rebasing the
+# library, not part of the shipped project.
+docs/
+
+# Binaries
+/rhapsode
+*.exe
+
+# Local database — job state lives here, never commit it
+*.db
+*.db-shm
+*.db-wal
+
+# Local configuration. The example is tracked so a fresh clone has something
+# to copy; the real file holds API keys and belongs in SOPS.
+rhapsode.yaml
