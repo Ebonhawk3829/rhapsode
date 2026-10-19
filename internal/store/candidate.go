@@ -167,6 +167,22 @@ func (s *Store) CandidateCount(jobID string) (int, error) {
 	return n, err
 }
 
+// Rejected returns a job's ruled-out offers, most recently rejected first.
+// These are the verify verdicts and user rejections: visible history with
+// their evidence, each restorable via Unreject.
+func (s *Store) Rejected(jobID string) ([]*Candidate, error) {
+	return s.queryCandidates(`
+		SELECT id, job_id, created_at,
+		       source, kind, username,
+		       title, remote_dir, external_url, file_json,
+		       size_bytes, format, bitrate, upload_speed_kbps, free_slot,
+		       score, band, reasons_json,
+		       rejected_at, confirmed_at, selected_json
+		FROM job_candidate
+		WHERE job_id = ? AND rejected_at != ''
+		ORDER BY rejected_at DESC`, jobID)
+}
+
 // RejectCandidate records the user's rejection of one candidate.
 //
 // Rejection is per job and sticky: the row stays in the database with its

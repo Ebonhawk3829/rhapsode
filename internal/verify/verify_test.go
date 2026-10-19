@@ -207,3 +207,17 @@ func TestDurationString(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthorTagNamingNarratorsIsSoft(t *testing.T) {
+	// Encoders misfile narrators into the author atom. That is sloppy
+	// tagging, not the wrong book: soft, never a rejection.
+	swapped := strings.Replace(gaDump, `"albumArtist": "Brandon Sanderson"`, `"albumArtist": "GraphicAudio"`, 1)
+	rel := gaRelease()
+	report, err := verifierWith(swapped).Inspect([]string{"/staged/book.m4b"}, rel)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if !report.OK {
+		t.Errorf("narrators-in-author rejected: %v", report.Reasons)
+	}
+}

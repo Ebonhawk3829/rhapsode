@@ -168,14 +168,21 @@ func judgeFile(doc *toneDoc, rel Release) []string {
 	}
 
 	// Author: albumArtist is the audiobook convention; artist is the
-	// fallback.
+	// fallback. Encoders routinely misfile the narrators into the author
+	// atom ("Kaleo Griffith and Jennifer Jill Araya" where the author is
+	// "Brandon Sanderson"): when the author tag names the release
+	// narrators instead of the author, that is sloppy tagging, not the
+	// wrong book — soft, not hard.
 	tagAuthor := firstNonEmpty(doc.Meta.AlbumArtist, doc.Meta.Artist)
 	if rel.Author != "" {
-		if tagAuthor == "" {
+		switch {
+		case tagAuthor == "":
 			out = append(out, "· no author tag (soft: folder rips often omit it)")
-		} else if matchesTitle(tagAuthor, rel.Author) {
+		case matchesTitle(tagAuthor, rel.Author):
 			out = append(out, "✓ author tag matches the release")
-		} else {
+		case rel.Narrator != "" && matchesNarrator(tagAuthor, rel.Narrator):
+			out = append(out, fmt.Sprintf("· author tag %q names the narrators, not the author (soft: mislabeled tags)", tagAuthor))
+		default:
 			out = append(out, fmt.Sprintf("✗ author tag %q does not match release %q", tagAuthor, rel.Author))
 		}
 	}

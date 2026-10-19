@@ -444,6 +444,27 @@ func (r *Runner) RejectCandidate(jobID, candidateID string) (*store.Job, error) 
 	return j, nil
 }
 
+// Unreject clears a candidate's rejected stamp so it can be confirmed again.
+//
+// Confirm-screen rejections and verify verdicts both land as rejected rows;
+// the override does not distinguish them. The job must be in confirm —
+// overriding mid-download would fork the pipeline — and the audit records
+// the override explicitly.
+func (r *Runner) Unreject(jobID, candidateID string) (*store.Job, error) {
+	j, err := r.st.Get(jobID)
+	if err != nil {
+		return nil, err
+	}
+	if j.State != store.Confirm {
+		return nil, fmt.Errorf("job %s is in state %q, not confirm", shortID(j.ID), j.State)
+	}
+	if err := r.st.Unreject(jobID, candidateID); err != nil {
+		return nil, err
+	}
+	_ = r.st.AddEvent(j.ID, "unreject", fmt.Sprintf("candidate %s restored by user override", shortID(candidateID)))
+	return r.st.Get(jobID)
+}
+
 // Cancel stops a job at the user's word. It is a decision, not an error:
 // the audit records it as such. An in-flight transfer is stopped and its
 // partial files deleted; a cancel failure is logged, never fatal — the

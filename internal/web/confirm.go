@@ -100,6 +100,29 @@ func (s *Server) handleRejectCandidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
+// handleUnrejectCandidate clears a rejection so the offer can be confirmed
+// again: the override for a verify verdict the user disagrees with.
+func (s *Server) handleUnrejectCandidate(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	var body struct {
+		CandidateID string `json:"candidateId"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.CandidateID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("candidateId is required"))
+		return
+	}
+	job, err := s.requests.Unreject(jobID, body.CandidateID)
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	job, err := s.requests.Cancel(r.PathValue("id"))
 	if err != nil {
@@ -210,6 +233,24 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
     {{end}}
     {{end}}
     {{end}}
+    {{if .Rejected}}
+    <h2>Rejected</h2>
+    <p class="sub">Offers already ruled out — including verify verdicts. Restore one to confirm it again.</p>
+    {{range .Rejected}}
+    <section class="card" aria-label="rejected offer from {{if .Username}}{{.Username}}{{else}}unknown share{{end}}">
+      <div class="title">{{if .Username}}{{.Username}}{{else}}unknown share{{end}} <span class="pill">{{.Band}}</span></div>
+      <div class="byline">{{.Format}}{{if .Bitrate}} &middot; {{.Bitrate}}kbps{{end}} &middot; {{.RenderSize}}</div>
+      <ul class="reasons">
+        {{range .Reasons}}<li class="{{if (startsWith . "✓")}}hit{{else if (startsWith . "✗")}}miss{{else}}note{{end}}">{{.}}</li>{{end}}
+      </ul>
+      <form method="post" action="/jobs/{{$.Job.ID}}/unreject">
+        <div class="actions">
+          <button class="btn" type="submit" name="candidateId" value="{{.ID}}">Restore and retry</button>
+        </div>
+      </form>
+    </section>
+    {{end}}
+    {{end}}
   {{else}}
   <p class="empty">No offers left. <a href="/jobs">Back to the queue</a>.</p>
   {{end}}
@@ -232,6 +273,9 @@ type jobView struct {
 	Job        *store.Job
 	Confirming bool
 	TagReview  bool
+	// Rejected lists ruled-out offers with their verdicts, each restorable
+	// via the override. Verify failures land here, not in the void.
+	Rejected []*candidateView
 	// SearchSources names the sources being asked, for the searching card.
 	SearchSources string
 	// AutoRefresh reloads the page every 10s on queued and progress states
@@ -340,6 +384,19 @@ func (s *Server) handleJobPage(w http.ResponseWriter, r *http.Request) {
 				v.Sections = append(v.Sections, sec)
 			} else {
 				v.Sections = append(v.Sections, sec)
+			}
+		}
+		if rej, err := s.st.Rejected(job.ID); err == nil {
+			for _, c := range rej {
+				v.Rejected = append(v.Rejected, &candidateView{
+					ID:         c.ID,
+					Username:   c.Username,
+					Format:     c.Format,
+					Bitrate:    c.Bitrate,
+					RenderSize: renderSize(c.SizeBytes),
+					Band:       c.Band,
+					Reasons:    c.Reasons,
+				})
 			}
 		}
 	case store.TagReview:
@@ -474,6 +531,25 @@ func (s *Server) handleRejectForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.requests.RejectCandidate(jobID, candidateID); err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	http.Redirect(w, r, "/jobs/"+jobID, http.StatusSeeOther)
+}
+
+// handleUnrejectForm accepts the override button on a rejected offer.
+func (s *Server) handleUnrejectForm(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	candidateID := r.PostFormValue("candidateId")
+	if candidateID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("candidateId is required"))
+		return
+	}
+	if _, err := s.requests.Unreject(jobID, candidateID); err != nil {
 		writeError(w, statusFor(err), err)
 		return
 	}

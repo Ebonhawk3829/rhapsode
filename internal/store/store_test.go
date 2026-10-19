@@ -262,3 +262,37 @@ func TestUpdateTags(t *testing.T) {
 		t.Errorf("Update mutated release fields: %+v", got)
 	}
 }
+
+func TestUnreject(t *testing.T) {
+	st := openTest(t)
+	j := mkJob("job-unreject-77777777")
+	if err := st.Create(j); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCandidate(&Candidate{
+		JobID: j.ID, Source: "slskd", Username: "u", RemoteDir: "d",
+		Files: []CandidateFile{{Name: "d/f.m4b"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cands, _ := st.Candidates(j.ID, 0)
+	if err := st.RejectCandidate(j.ID, cands[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := st.CandidateCount(j.ID); n != 0 {
+		t.Fatalf("count = %d, want 0 after reject", n)
+	}
+	rej, err := st.Rejected(j.ID)
+	if err != nil || len(rej) != 1 {
+		t.Fatalf("rejected = %d, %v; want 1", len(rej), err)
+	}
+	if err := st.Unreject(j.ID, cands[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := st.CandidateCount(j.ID); n != 1 {
+		t.Errorf("count = %d, want 1 after unreject", n)
+	}
+	if err := st.Unreject(j.ID, "missing"); err != ErrNotFound {
+		t.Errorf("unreject missing = %v, want ErrNotFound", err)
+	}
+}
