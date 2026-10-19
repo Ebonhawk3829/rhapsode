@@ -111,3 +111,43 @@ func TestPartDetection(t *testing.T) {
 		t.Errorf("part 11 parsed as %d parts", n)
 	}
 }
+
+func TestAudioPresence(t *testing.T) {
+	rel := relGA()
+	audio := candGA(1)
+	if r := Grade(rel, audio); r.Band == BandReject {
+		t.Errorf("audio share rated reject: %v", r.Reasons)
+	}
+	companions := source.Candidate{
+		Title:  "The Way of Kings",
+		Format: "jpg",
+		Files:  []source.File{{Name: "cover.jpg"}, {Name: "book.epub"}},
+		Handle: source.Handle{Kind: source.P2P},
+	}
+	r := Grade(rel, companions)
+	found := false
+	for _, reason := range r.Reasons {
+		if strings.Contains(reason, "no audio files") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("companion-only share not flagged: %v", r.Reasons)
+	}
+	if r.Band == BandAccept {
+		t.Errorf("companion-only share rated accept: %v", r.Reasons)
+	}
+	// Torrent placeholders skip the check: no file list pre-grab.
+	torrent := source.Candidate{
+		Title:  "The Way of Kings",
+		Format: "m4b",
+		Files:  []source.File{{Name: "/abss/some-book/"}},
+		Handle: source.Handle{Kind: source.Torrent},
+	}
+	r = Grade(rel, torrent)
+	for _, reason := range r.Reasons {
+		if strings.Contains(reason, "no audio files") {
+			t.Errorf("torrent placeholder flagged for missing audio it never had: %v", r.Reasons)
+		}
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -58,6 +59,10 @@ type Runner struct {
 	// notifier pushes the two moments the user cares about: done and
 	// failed. Nil-safe — an unconfigured deployment runs without pushes.
 	notifier *notify.Notifier
+	// downloads is rhapsode's view of the shared downloads tree. The
+	// cleaner removes audiobooks/<slug> dirs for jobs that no longer need
+	// them; empty means cleanup disabled (tests).
+	downloads string
 	// interval is how often the runner sweeps for work.
 	interval time.Duration
 }
@@ -107,6 +112,12 @@ func (r *Runner) SetNotifier(n *notify.Notifier) {
 	r.notifier = n
 }
 
+// SetDownloads wires the orphan cleaner: audiobooks/<slug> dirs under this
+// tree are removed when their job ends. Empty disables cleanup.
+func (r *Runner) SetDownloads(dir string) {
+	r.downloads = dir
+}
+
 // ownedChecker is the duplicate guard the search step consults. The shelver
 // implements it against ABS; tests script it.
 type ownedChecker interface {
@@ -124,8 +135,12 @@ func (r *Runner) Request(rel request.Release) (*store.Job, error) {
 	return r.requests.Request(rel)
 }
 
-// Run sweeps until the context ends.
+// Run sweeps until the context ends. A startup sweep first removes
+// download dirs with no live job behind them: a crash between enqueue and
+// cleanup leaves bytes no job will ever claim.
 func (r *Runner) Run(ctx context.Context) {
+	r.sweepOrphans()
+
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
@@ -141,6 +156,44 @@ func (r *Runner) Run(ctx context.Context) {
 	}
 }
 
+// sweepOrphans removes audiobooks/<slug> dirs whose slug no live job holds.
+// Terminal jobs own nothing: their dirs were removed at the transition, so
+// anything left is crash debris.
+func (r *Runner) sweepOrphans() {
+	if r.downloads == "" {
+		return
+	}
+	root := filepath.Join(r.downloads, "audiobooks")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("job: orphan sweep %s: %v", root, err)
+		}
+		return
+	}
+	jobs, err := r.st.List("")
+	if err != nil {
+		log.Printf("job: orphan sweep: %v", err)
+		return
+	}
+	live := map[string]bool{}
+	for _, j := range jobs {
+		if !j.State.Terminal() {
+			live[j.Slug] = true
+		}
+	}
+	for _, e := range entries {
+		if !e.IsDir() || live[e.Name()] {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
+			log.Printf("job: orphan sweep %s: %v", e.Name(), err)
+		} else {
+			log.Printf("job: orphan sweep removed %s", e.Name())
+		}
+	}
+}
+
 // sweep advances every job that needs advancing.
 func (r *Runner) sweep(ctx context.Context) error {
 	jobs, err := r.st.List("")
@@ -152,7 +205,7 @@ func (r *Runner) sweep(ctx context.Context) error {
 			continue
 		}
 		if err := r.advance(ctx, j); err != nil {
-			log.Printf("job: %s (%s): %v", j.ID[:8], j.Title, err)
+			log.Printf("job: %s (%s): %v", shortID(j.ID), j.Title, err)
 		}
 	}
 	return nil
@@ -225,17 +278,24 @@ func (r *Runner) search(ctx context.Context, j *store.Job) error {
 		}
 		for _, c := range cands {
 			res := score.Grade(rel, c)
+			if posted := candidatePosted(c); posted != "" {
+				res.Reasons = append(res.Reasons, "· posted "+posted)
+			}
 			sc := &store.Candidate{
-				JobID:     j.ID,
-				Source:    c.Source,
-				Kind:      string(c.Handle.Kind),
-				Username:  candidateUser(c),
-				Title:     c.Title,
-				RemoteDir: c.RemoteDir,
-				Files:     filesOf(c),
+				JobID:       j.ID,
+				Source:      c.Source,
+				Kind:        string(c.Handle.Kind),
+				Username:    candidateUser(c),
+				Title:       c.Title,
+				RemoteDir:   c.RemoteDir,
+				ExternalURL: c.ExternalURL,
+				Files:       filesOf(c),
 				SizeBytes: c.SizeBytes,
 				Format:    c.Format,
 				Bitrate:   c.Bitrate,
+				// A free upload slot dominates peer ranking: the slskd
+				// source offsets slotted peers by 1000 (see
+				// slskd.freeSlotBonus) and this flag records it.
 				FreeSlot:  c.Seeders >= 1000,
 				Score:     res.Score,
 				Band:      res.Band,
@@ -247,6 +307,10 @@ func (r *Runner) search(ctx context.Context, j *store.Job) error {
 			nFound++
 		}
 	}
+	// nFound counts rows persisted this pass, including re-found offers the
+	// store collapsed as duplicates. The audit line reports it as found,
+	// not as new — the distinction matters when a re-sweep restates the
+	// same list.
 	if nFound == 0 {
 		return r.fail(j, "no candidates from any source")
 	}
@@ -258,13 +322,7 @@ func (r *Runner) search(ctx context.Context, j *store.Job) error {
 	if err := r.st.Update(j); err != nil {
 		return err
 	}
-	if err := r.st.AddEvent(j.ID, "search", fmt.Sprintf("%d offers found; awaiting file selection", nFound)); err != nil {
-		return err
-	}
-	// The confirm stop is one of the moments the user cares about: the
-	// machine cannot proceed without their pick, so it says so.
-	r.notify(ctx, "Offers ready", j.Title+": "+fmt.Sprintf("%d offers found — pick one to start the download", nFound))
-	return nil
+	return r.st.AddEvent(j.ID, "search", fmt.Sprintf("%d offers found; awaiting file selection", nFound))
 }
 
 // Confirm hands the user's file selection to the download pipeline.
@@ -279,7 +337,7 @@ func (r *Runner) Confirm(ctx context.Context, jobID, candidateID string, selecte
 		return nil, err
 	}
 	if j.State != store.Confirm {
-		return nil, fmt.Errorf("job %s is in state %q, not confirm", j.ID[:8], j.State)
+		return nil, fmt.Errorf("job %s is in state %q, not confirm", shortID(j.ID), j.State)
 	}
 
 	c, err := r.st.CandidateByID(jobID, candidateID)
@@ -328,7 +386,7 @@ func (r *Runner) Confirm(ctx context.Context, jobID, candidateID string, selecte
 		return nil, err
 	}
 
-	grabbable, err := origin.Grab(ctx, sc)
+	grabbable, err := origin.Grab(ctx, sc, j.Slug)
 	if err != nil {
 		return nil, fmt.Errorf("grab failed: %w", err)
 	}
@@ -365,7 +423,7 @@ func (r *Runner) RejectCandidate(jobID, candidateID string) (*store.Job, error) 
 		return nil, err
 	}
 	if j.State != store.Confirm {
-		return nil, fmt.Errorf("job %s is in state %q, not confirm", j.ID[:8], j.State)
+		return nil, fmt.Errorf("job %s is in state %q, not confirm", shortID(j.ID), j.State)
 	}
 	if err := r.st.RejectCandidate(jobID, candidateID); err != nil {
 		return nil, err
@@ -375,14 +433,19 @@ func (r *Runner) RejectCandidate(jobID, candidateID string) (*store.Job, error) 
 		return nil, err
 	}
 	if left == 0 {
-		return nil, r.fail(j, "all candidates rejected")
+		if err := r.fail(j, "all candidates rejected"); err != nil {
+			return nil, err
+		}
+		return j, nil
 	}
-	_ = r.st.AddEvent(j.ID, "reject", fmt.Sprintf("candidate %s rejected; %d remain", candidateID[:8], left))
+	_ = r.st.AddEvent(j.ID, "reject", fmt.Sprintf("candidate %s rejected; %d remain", shortID(candidateID), left))
 	return j, nil
 }
 
-// Cancel stops a job in confirm (or terminal-adjacent states) at the user's
-// word. It is a decision, not an error: the audit records it as such.
+// Cancel stops a job at the user's word. It is a decision, not an error:
+// the audit records it as such. An in-flight transfer is stopped and its
+// partial files deleted; a cancel failure is logged, never fatal — the
+// orphan sweep collects whatever the downloader kept.
 func (r *Runner) Cancel(jobID string) (*store.Job, error) {
 	j, err := r.st.Get(jobID)
 	if err != nil {
@@ -391,12 +454,36 @@ func (r *Runner) Cancel(jobID string) (*store.Job, error) {
 	if j.State.Terminal() {
 		return j, nil
 	}
+	if j.GrabID != "" {
+		if g, ok := r.grabbers[r.grabKindOf(j)]; ok {
+			if err := g.Cancel(context.Background(), grab.ID(j.GrabID)); err != nil {
+				log.Printf("job: %s: cancel transfer: %v", shortID(j.ID), err)
+			}
+		}
+	}
 	j.State = store.Cancelled
 	if err := r.st.Update(j); err != nil {
 		return nil, err
 	}
 	_ = r.st.AddEvent(j.ID, "cancel", "cancelled by user")
+	r.cleanup(j)
 	return j, nil
+}
+
+// Clear deletes a terminal job from the queue. Live jobs are refused —
+// cancel first, so downloads and decisions are never orphaned by a delete.
+// The download directory goes with the row: clearing is the user's
+// explicit "I'm done with this", and leftovers are not souvenirs.
+func (r *Runner) Clear(jobID string) error {
+	j, err := r.st.Get(jobID)
+	if err != nil {
+		return err
+	}
+	if !j.State.Terminal() {
+		return fmt.Errorf("job %s is %q, not terminal; cancel it first", shortID(j.ID), j.State)
+	}
+	r.cleanup(j)
+	return r.st.Delete(jobID)
 }
 
 // poll checks the downloader and hands a completed transfer to verify.
@@ -414,6 +501,7 @@ func (r *Runner) poll(ctx context.Context, j *store.Job) error {
 		return fmt.Errorf("status: %w", err)
 	}
 
+	prevPhase := j.Phase
 	j.Phase = string(st.Phase)
 	j.Progress = st.Progress
 	if err := r.st.Update(j); err != nil {
@@ -429,6 +517,15 @@ func (r *Runner) poll(ctx context.Context, j *store.Job) error {
 		return r.st.AddEvent(j.ID, "download", "staged in "+j.Slug+"; verifying")
 	case grab.Failed:
 		return r.fail(j, "download failed: "+st.Message)
+	case grab.Unknown, grab.Stalled:
+		// The downloader lost the transfer or parked it. Stay in
+		// downloading but leave a trail: previously these phases spun
+		// silently with no event, no failure, no notify. One event per
+		// transition, not one per sweep.
+		if prevPhase != string(st.Phase) {
+			_ = r.st.AddEvent(j.ID, "download", fmt.Sprintf("transfer %s (%s)", st.Phase, st.Message))
+		}
+		return nil
 	}
 	return nil
 }
@@ -480,8 +577,9 @@ func (r *Runner) verifyStaged(ctx context.Context, j *store.Job) error {
 	return nil
 }
 
-// mergeStaged combines the verified batch into the one .m4b and hands it to
-// tagging.
+// mergeStaged combines the verified batch into the one .m4b and parks the
+// job in tag review: the user edits the proposed tags and confirms before
+// anything is written.
 func (r *Runner) mergeStaged(ctx context.Context, j *store.Job) error {
 	if r.merger == nil {
 		return nil // not wired in this deployment shape; park
@@ -491,19 +589,56 @@ func (r *Runner) mergeStaged(ctx context.Context, j *store.Job) error {
 		return err
 	}
 
-	res, err := r.merger.Merge(ctx, j.Title, paths)
+	res, err := r.merger.Merge(ctx, j.Slug, j.Title, paths)
 	if err != nil {
 		return r.fail(j, "merge failed: "+err.Error())
 	}
 	_ = r.st.AddEvent(j.ID, "merge", fmt.Sprintf(
 		"%s (%d input files)", map[bool]string{true: "merged", false: "passed through"}[res.Merged], len(paths)))
 
-	j.State = store.Tagging
+	j.State = store.TagReview
 	j.Phase = res.Path
 	if err := r.st.Update(j); err != nil {
 		return err
 	}
-	return nil
+	return r.st.AddEvent(j.ID, "tag-review", "merged; tags await review")
+}
+
+// ConfirmTags applies the user's reviewed tags and advances to shelving.
+// An empty field keeps the job's stored value: the review form submits the
+// whole proposal, and clearing a field is how optional metadata is dropped.
+func (r *Runner) ConfirmTags(ctx context.Context, jobID string, m tag.Metadata) (*store.Job, error) {
+	j, err := r.st.Get(jobID)
+	if err != nil {
+		return nil, err
+	}
+	if j.State != store.TagReview {
+		return nil, fmt.Errorf("job %s is in state %q, not tag-review", shortID(j.ID), j.State)
+	}
+	if j.Phase == "" {
+		return nil, fmt.Errorf("job %s has no merged file to tag", shortID(j.ID))
+	}
+	// Persist the reviewed values so the shelving path and the audit agree
+	// with what was written.
+	j.Title = strings.TrimSpace(m.Title)
+	j.Author = strings.TrimSpace(m.Author)
+	j.Series = strings.TrimSpace(m.Series)
+	j.SeriesSequence = strings.TrimSpace(m.SeriesSequence)
+	j.Narrator = strings.TrimSpace(m.Narrator)
+	j.Publisher = strings.TrimSpace(m.Publisher)
+	j.PublishedYear = strings.TrimSpace(m.PublishedYear)
+	j.Description = strings.TrimSpace(m.Description)
+	j.Genre = strings.TrimSpace(m.Genre)
+
+	j.State = store.Tagging
+	if err := r.st.UpdateTags(j); err != nil {
+		return nil, err
+	}
+	_ = r.st.AddEvent(j.ID, "tag-review", "tags confirmed by user")
+	if err := r.tagStaged(ctx, j); err != nil {
+		return nil, err
+	}
+	return r.st.Get(jobID)
 }
 
 // tagStaged writes the library metadata contract onto the merged file.
@@ -523,6 +658,8 @@ func (r *Runner) tagStaged(ctx context.Context, j *store.Job) error {
 		Narrator:       j.Narrator,
 		Publisher:      j.Publisher,
 		PublishedYear:  j.PublishedYear,
+		Description:    j.Description,
+		Genre:          j.Genre,
 	})
 	if err != nil {
 		return r.fail(j, "tagging failed: "+err.Error())
@@ -561,8 +698,11 @@ func (r *Runner) shelveStaged(ctx context.Context, j *store.Job) error {
 	// A failed removal never undoes the shelving — a leftover costs disk
 	// space, not correctness.
 	if err := os.Remove(j.Phase); err != nil && !os.IsNotExist(err) {
-		log.Printf("job: %s: staging cleanup: %v", j.ID[:8], err)
+		log.Printf("job: %s: staging cleanup: %v", shortID(j.ID), err)
 	}
+	// The download directory served its purpose: the bytes are in the
+	// library now, and the dir goes back to empty scratch.
+	r.cleanup(j)
 
 	j.State = store.Done
 	j.Phase = dest
@@ -653,7 +793,9 @@ func firstNegative(reasons []string) string {
 	return "unknown mismatch"
 }
 
-// fail marks a job failed with a reason and an audit entry.
+// fail marks a job failed with a reason and an audit entry. The job's
+// download directory is removed: a failed acquisition leaves no bytes
+// behind for the next attempt to trip over.
 func (r *Runner) fail(j *store.Job, reason string) error {
 	j.State = store.Failed
 	j.Error = reason
@@ -662,11 +804,31 @@ func (r *Runner) fail(j *store.Job, reason string) error {
 		return err
 	}
 	_ = r.st.AddEvent(j.ID, "failed", reason)
+	r.cleanup(j)
 	r.notify(context.Background(), "Request failed", j.Title+": "+reason)
 	return nil
 }
 
+// cleanup removes the job's download directory and empty parents. A removal
+// failure is logged, never fatal: leftovers cost disk, not correctness, and
+// the startup sweep retries them.
+func (r *Runner) cleanup(j *store.Job) {
+	if r.downloads == "" || j.Slug == "" {
+		return
+	}
+	dir := filepath.Join(r.downloads, "audiobooks", j.Slug)
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("job: %s: cleanup %s: %v", shortID(j.ID), dir, err)
+	}
+}
+
 // releaseOf maps the stored job onto the Release a source searches for.
+//
+// Unabridged is always true: neither catalogue surfaces an abridgement flag
+// on its records, and every edition rhapsode acquires is produced and sold
+// as unabridged. If a catalogue ever reports otherwise, this becomes a
+// stored field. Until then the assumption lives here, once, rather than
+// scattered across call sites.
 func releaseOf(j *store.Job) source.Release {
 	return source.Release{
 		Title:          j.Title,
@@ -675,11 +837,9 @@ func releaseOf(j *store.Job) source.Release {
 		SeriesSequence: j.SeriesSequence,
 		Narrator:       j.Narrator,
 		Publisher:      j.Publisher,
-		// Catalogues treat editions as unabridged unless they say otherwise;
-		// an abridged listing contradicts that and scoring flags it.
-		Unabridged: true,
-		Identifier: sourceIdentifier(j),
-		Query:      j.Query,
+		Unabridged:     true,
+		Identifier:     sourceIdentifier(j),
+		Query:          j.Query,
 	}
 }
 
@@ -692,6 +852,16 @@ func sourceIdentifier(j *store.Job) metadata.Identifier {
 		Kind:  metadata.IdentifierKind(j.IdentifierKind),
 		Value: j.IdentifierVal,
 	}
+}
+
+// shortID renders an ID prefix for logs and audit lines. IDs arriving over
+// the API are user input and may be short or empty; slicing without a guard
+// panics the process.
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 // renderSize makes a byte count human for the audit log.
@@ -725,6 +895,17 @@ func (r *Runner) grabKindOf(j *store.Job) source.Kind {
 func candidateUser(c source.Candidate) string {
 	if ref, ok := c.Handle.Ref.(interface{ Peer() string }); ok {
 		return ref.Peer()
+	}
+	return ""
+}
+
+// candidatePosted extracts a listing's posted date for display. ABB
+// listings carry it; slskd shares have no equivalent. The date rides a
+// reason line, never the score — recency is a hint about swarm liveness,
+// not evidence of edition match.
+func candidatePosted(c source.Candidate) string {
+	if p, ok := c.Handle.Ref.(interface{ PostedDateOf() string }); ok {
+		return p.PostedDateOf()
 	}
 	return ""
 }

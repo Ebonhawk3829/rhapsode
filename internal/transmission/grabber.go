@@ -138,11 +138,17 @@ func (g *Grabber) Status(ctx context.Context, id grab.ID) (grab.State, error) {
 	}, &out); err != nil {
 		return grab.State{}, err
 	}
-	// Not in the list: either the done-hook removed it (success) or it was
-	// cleared. Transmission cannot tell us which after the fact, so absence
-	// is read as done — the runner's verify phase is the real gate anyway.
+	// Not in the list: the done-hook removed it after a completed
+	// download, or the torrent was cleared some other way. When the
+	// shape was captured on an earlier poll the bytes landed and Done
+	// is right. Without a capture there is no evidence either way —
+	// report Unknown so the runner parks visibly instead of declaring
+	// success and failing Located forever.
 	if len(out.Torrents) == 0 {
-		return grab.State{Phase: grab.Done, Progress: 1}, nil
+		if _, ok := g.captured[id]; ok {
+			return grab.State{Phase: grab.Done, Progress: 1}, nil
+		}
+		return grab.State{Phase: grab.Unknown, Message: "torrent absent and never captured"}, nil
 	}
 	t := out.Torrents[0]
 	if t.Error != 0 {
@@ -183,6 +189,27 @@ func (g *Grabber) Located(_ context.Context, id grab.ID) ([]string, error) {
 		out = append(out, g.localPath(shape.downloadDir, f))
 	}
 	return out, nil
+}
+
+// Cancel removes a torrent and its partial files. An absent torrent is a
+// no-op: the done hook or a previous cancel already took it.
+func (g *Grabber) Cancel(ctx context.Context, id grab.ID) error {
+	var out struct {
+		Torrents []torrentRow `json:"torrents"`
+	}
+	if err := g.call(ctx, "torrent-get", map[string]any{
+		"ids":    []int{atoi(string(id))},
+		"fields": []string{"id"},
+	}, &out); err != nil {
+		return err
+	}
+	if len(out.Torrents) == 0 {
+		return nil
+	}
+	return g.call(ctx, "torrent-remove", map[string]any{
+		"ids":              []int{atoi(string(id))},
+		"delete-local-data": true,
+	}, nil)
 }
 
 // localPath translates a transmission-side path into the same file as

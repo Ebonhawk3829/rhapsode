@@ -3,6 +3,7 @@ package web
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,7 +16,11 @@ import (
 	"github.com/Ebonhawk3829/rhapsode/internal/config"
 	"github.com/Ebonhawk3829/rhapsode/internal/request"
 	"github.com/Ebonhawk3829/rhapsode/internal/store"
+	"github.com/Ebonhawk3829/rhapsode/internal/tag"
 )
+
+//go:embed favicon.png
+var faviconPNG []byte
 
 // RequestCreator turns a release pick into a durable job. The interface keeps
 // the web package free of the runner's dependencies.
@@ -27,8 +32,12 @@ type RequestCreator interface {
 	Confirm(ctx context.Context, jobID, candidateID string, selected []store.CandidateFile) (*store.Job, error)
 	// RejectCandidate records the user's rejection of one offer.
 	RejectCandidate(jobID, candidateID string) (*store.Job, error)
+	// ConfirmTags applies the user's reviewed tags and advances to shelving.
+	ConfirmTags(ctx context.Context, jobID string, m tag.Metadata) (*store.Job, error)
 	// Cancel abandons a job.
 	Cancel(jobID string) (*store.Job, error)
+	// Clear deletes a terminal job and its candidates.
+	Clear(jobID string) error
 }
 
 // Server is the HTTP surface.
@@ -46,6 +55,7 @@ func New(cfg *config.File, st *store.Store, cat *catalog.Catalog, rc RequestCrea
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /favicon.ico", s.handleFavicon)
 	mux.HandleFunc("GET /", s.handleIndex)
 	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("POST /api/jobs", s.handleCreateJob)
@@ -54,13 +64,17 @@ func New(cfg *config.File, st *store.Store, cat *catalog.Catalog, rc RequestCrea
 	mux.HandleFunc("GET /jobs/{id}", s.handleJobPage)
 	mux.HandleFunc("POST /jobs/{id}/confirm", s.handleConfirmForm)
 	mux.HandleFunc("POST /jobs/{id}/reject", s.handleRejectForm)
+	mux.HandleFunc("POST /jobs/{id}/tags", s.handleTagsForm)
 	mux.HandleFunc("POST /jobs/{id}/cancel", s.handleCancelForm)
+	mux.HandleFunc("POST /jobs/{id}/clear", s.handleClearForm)
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
 	mux.HandleFunc("GET /api/jobs/{id}/candidates", s.handleListCandidates)
 	mux.HandleFunc("POST /api/jobs/{id}/confirm", s.handleConfirmJob)
 	mux.HandleFunc("POST /api/jobs/{id}/reject", s.handleRejectCandidate)
+	mux.HandleFunc("POST /api/jobs/{id}/tags", s.handleConfirmTags)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
+	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleClearJob)
 
 	s.http = &http.Server{
 		Addr:              cfg.Server.Listen,
@@ -85,6 +99,41 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // unhealthy.
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleFavicon serves the embedded icon. Browsers request /favicon.ico
+// unprompted; without this the request 404s into the index handler's
+// NotFound path and litters the access log.
+func (s *Server) handleFavicon(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(faviconPNG)
+}
+
+// degraded names the unconfigured pieces so the UI can say the deployment is
+// running below full strength. Blank details mean off — this is the loud
+// half of that contract.
+func (s *Server) degraded() []string {
+	var out []string
+	if s.cfg == nil {
+		return out
+	}
+	if s.cfg.Providers.GraphicAudio.URL == "" {
+		out = append(out, "graphicaudio")
+	}
+	if s.cfg.Providers.Audible.Base == "" {
+		out = append(out, "audible")
+	}
+	if s.cfg.Providers.Audnexus.URL == "" {
+		out = append(out, "audnexus")
+	}
+	if s.cfg.Sources.Slskd.URL == "" || s.cfg.Sources.Slskd.APIKey == "" {
+		out = append(out, "slskd")
+	}
+	if s.cfg.Sources.AudioBookBay.FlareSolverr == "" || s.cfg.Grabbers.Transmission.URL == "" {
+		out = append(out, "audiobookbay")
+	}
+	return out
 }
 
 // handleSearch runs the omnisearch. A query that matches nothing is an empty
@@ -154,6 +203,8 @@ type createJobBody struct {
 	Narrator       string `json:"narrator"`
 	Publisher      string `json:"publisher"`
 	PublishedYear  string `json:"publishedYear"`
+	Description    string `json:"description"`
+	Genre          string `json:"genre"`
 	IdentifierKind string `json:"identifierKind"`
 	IdentifierVal  string `json:"identifierValue"`
 	Query          string `json:"query"`
@@ -176,6 +227,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		Narrator:       body.Narrator,
 		Publisher:      body.Publisher,
 		PublishedYear:  body.PublishedYear,
+		Description:    body.Description,
+		Genre:          body.Genre,
 		Identifier: request.ID{
 			Kind:  body.IdentifierKind,
 			Value: body.IdentifierVal,

@@ -34,9 +34,10 @@ type Candidate struct {
 	Kind     string
 	Username string
 
-	Title     string
-	RemoteDir string
-	Files     []CandidateFile
+	Title       string
+	RemoteDir   string
+	ExternalURL string
+	Files       []CandidateFile
 
 	SizeBytes       int64
 	Format          string
@@ -86,15 +87,15 @@ func (s *Store) SaveCandidate(c *Candidate) error {
 		INSERT INTO job_candidate (
 			id, job_id, created_at,
 			source, kind, username,
-			title, remote_dir, file_json,
+			title, remote_dir, external_url, file_json,
 			size_bytes, format, bitrate, upload_speed_kbps, free_slot,
 			score, band, reasons_json,
 			rejected_at, confirmed_at, selected_json
-		) VALUES (?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?,?,?,?, '','','[]')
+		) VALUES (?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?,?,?,?,?, '','','[]')
 		ON CONFLICT (job_id, source, username, remote_dir) DO NOTHING`,
 		c.ID, c.JobID, ts(time.Now().UTC()),
 		c.Source, c.Kind, c.Username,
-		c.Title, c.RemoteDir, string(files),
+		c.Title, c.RemoteDir, c.ExternalURL, string(files),
 		c.SizeBytes, c.Format, c.Bitrate, c.UploadSpeedKbps, c.FreeSlot,
 		c.Score, c.Band, string(reasons),
 	)
@@ -102,14 +103,6 @@ func (s *Store) SaveCandidate(c *Candidate) error {
 		return fmt.Errorf("save candidate: %w", err)
 	}
 	return nil
-}
-
-// Candidate query filter: rejected rows are only loaded on request, because
-// the confirm screen shows what is still on offer.
-type candidateQuery struct {
-	includeRejected  bool
-	includeConfirmed bool
-	limit            int
 }
 
 // Candidates returns a job's persisted candidates, best first.
@@ -121,7 +114,7 @@ func (s *Store) Candidates(jobID string, limit int) ([]*Candidate, error) {
 	q := `
 		SELECT id, job_id, created_at,
 		       source, kind, username,
-		       title, remote_dir, file_json,
+		       title, remote_dir, external_url, file_json,
 		       size_bytes, format, bitrate, upload_speed_kbps, free_slot,
 		       score, band, reasons_json,
 		       rejected_at, confirmed_at, selected_json
@@ -129,8 +122,8 @@ func (s *Store) Candidates(jobID string, limit int) ([]*Candidate, error) {
 	// Rejected rows are hidden until every row is rejected — the job page
 	// then shows why the job has nothing left to offer. Confirmed rows are
 	// always kept: they are the historical record of what was taken.
-	q += ` WHERE (rejected_at = '' OR confirmed_at != '')`
-	args := []any{}
+	q += ` WHERE job_id = ? AND (rejected_at = '' OR confirmed_at != '')`
+	args := []any{jobID}
 	if limit > 0 {
 		q += ` ORDER BY confirmed_at DESC, score DESC LIMIT ?`
 		args = append(args, limit)
@@ -145,7 +138,7 @@ func (s *Store) CandidateByID(jobID, id string) (*Candidate, error) {
 	rows, err := s.queryCandidates(`
 		SELECT id, job_id, created_at,
 		       source, kind, username,
-		       title, remote_dir, file_json,
+		       title, remote_dir, external_url, file_json,
 		       size_bytes, format, bitrate, upload_speed_kbps, free_slot,
 		       score, band, reasons_json,
 		       rejected_at, confirmed_at, selected_json
@@ -248,7 +241,7 @@ func (s *Store) queryCandidates(q string, args ...any) ([]*Candidate, error) {
 		if err := rows.Scan(
 			&c.ID, &c.JobID, &created,
 			&c.Source, &c.Kind, &c.Username,
-			&c.Title, &c.RemoteDir, &filesJSON,
+			&c.Title, &c.RemoteDir, &c.ExternalURL, &filesJSON,
 			&c.SizeBytes, &c.Format, &c.Bitrate, &c.UploadSpeedKbps, &freeSlot,
 			&c.Score, &c.Band, &reasonsJSON,
 			&rejected, &confirmed, &selectedJSON,

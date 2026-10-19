@@ -35,21 +35,6 @@ func (s *Source) Name() string { return "slskd" }
 // Kind is the transport slskd handles use.
 func (s *Source) Kind() source.Kind { return source.P2P }
 
-// Policy is how hard slskd may be pushed.
-//
-// Soulseek is a volunteer network and slskd serialises its own download
-// requests, so the limits are conservative: one search at a time, a pause
-// between them, and a long cooldown after repeated failures.
-func (s *Source) Policy() source.Policy {
-	return source.Policy{
-		Rate:        2 * time.Second,
-		Burst:       1,
-		Concurrency: 1,
-		Backoff:     5 * time.Second,
-		Cooldown:    5 * time.Minute,
-	}
-}
-
 // Search finds candidate copies of a release.
 //
 // The query is built from whatever the release carries. A release with no
@@ -175,22 +160,25 @@ func commonDir(files []file) string {
 	return dir
 }
 
-// Grab enqueues a candidate's files into the staging destination.
+// Grab enqueues a candidate's files into the job's staging destination.
 //
-// The destination is the slug the caller chose, relative to slskd's download
-// root. slskd creates it; rhapsode does not need the directory to exist.
+// The destination is audiobooks/<slug>, relative to slskd's download root.
+// slskd creates it; rhapsode does not need the directory to exist. The slug
+// arrives explicitly rather than derived from the listing title: the title
+// is peer text, the slug is the job's identity, and the orphan cleanup
+// sweeps by slug.
 //
 // The candidate may arrive from two origins: a live search response (ref
 // holds the peer and files directly) or a confirmed selection rebuilt from
 // persisted candidates (files and username come from the candidate's own
 // fields). Both must enqueue identically.
-func (s *Source) Grab(ctx context.Context, c source.Candidate) (source.Handle, error) {
+func (s *Source) Grab(ctx context.Context, c source.Candidate, slug string) (source.Handle, error) {
 	username, peerFiles := refPeer(c)
 	if username == "" || len(peerFiles) == 0 {
 		return source.Handle{}, errors.New("slskd: handle has no peer or files")
 	}
 
-	destination := destinationFor(c)
+	destination := destinationFor(slug)
 	files := make([]batchFile, 0, len(peerFiles))
 	for _, f := range peerFiles {
 		files = append(files, batchFile{Filename: f.Filename, Size: f.Size})
@@ -271,17 +259,15 @@ type grabRef struct {
 	Files    []file
 }
 
-// destinationFor is the staging subdirectory for a candidate.
-//
-// The slug is carried on the candidate's title when the caller has set one;
-// otherwise the release title is slugified. slskd treats the value as a path
-// relative to its download root, so it is cleaned to prevent traversal.
-func destinationFor(c source.Candidate) string {
-	slug := slugify(c.Title)
-	if slug == "" {
-		slug = "unknown"
+// destinationFor is the staging subdirectory for a job slug. slskd treats
+// the value as a path relative to its download root, so the slug is cleaned
+// to prevent traversal.
+func destinationFor(slug string) string {
+	clean := slugify(slug)
+	if clean == "" {
+		clean = "unknown"
 	}
-	return path.Join("audiobooks", slug)
+	return path.Join("audiobooks", clean)
 }
 
 // searchQuery builds the Soulseek query from a release.
@@ -353,12 +339,19 @@ func totalSize(files []file) int64 {
 	return n
 }
 
+// freeSlotBonus is the availability offset for a peer with a free upload
+// slot. The runner records FreeSlot for candidates at or above this score;
+// the constant lives here (the scoring is this package's business) and the
+// threshold is restated at the use site with a pointer back here, so the two
+// cannot drift silently.
+const freeSlotBonus = 1000
+
 // availability scores a peer. A free upload slot is worth more than speed: a
 // peer with no slot will queue the request indefinitely.
 func availability(r userResponse) int {
 	score := 0
 	if r.HasFreeUploadSlot {
-		score += 1000
+		score += freeSlotBonus
 	}
 	// A shorter queue is better, so invert it into the score.
 	score += max(0, 100-r.QueueLength)

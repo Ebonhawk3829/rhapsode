@@ -60,12 +60,12 @@ func TestBatchEnqueueCarriesDestination(t *testing.T) {
 		},
 	}
 
-	h, err := s.Grab(context.Background(), cand)
+	h, err := s.Grab(context.Background(), cand, "the-black-prism-72fc7a3d")
 	if err != nil {
 		t.Fatalf("Grab: %v", err)
 	}
-	if gotDestination != "audiobooks/the-black-prism" {
-		t.Errorf("destination = %q, want audiobooks/the-black-prism", gotDestination)
+	if gotDestination != "audiobooks/the-black-prism-72fc7a3d" {
+		t.Errorf("destination = %q, want audiobooks/the-black-prism-72fc7a3d", gotDestination)
 	}
 	if gotUsername != "somepeer" {
 		t.Errorf("username = %q, want somepeer", gotUsername)
@@ -94,7 +94,7 @@ func TestGrabRejectsForeignHandle(t *testing.T) {
 	s := NewSource(New(srv.URL, "k"))
 	_, err := s.Grab(context.Background(), source.Candidate{
 		Handle: source.Handle{Kind: source.Torrent, Ref: "magnet:?xt=urn:btih:abc"},
-	})
+	}, "slug-1")
 	if err == nil {
 		t.Fatal("Grab accepted a torrent handle, want an error")
 	}
@@ -148,15 +148,13 @@ func TestSearchQueryFallsBackToRawQuery(t *testing.T) {
 }
 
 func TestDestinationFor(t *testing.T) {
-	c := source.Candidate{Title: "The Black Prism"}
-	if got := destinationFor(c); got != "audiobooks/the-black-prism" {
+	if got := destinationFor("the-black-prism-72fc7a3d"); got != "audiobooks/the-black-prism-72fc7a3d" {
 		t.Errorf("destinationFor = %q", got)
 	}
 
-	// A candidate with nothing to name goes to a fixed bucket rather than
+	// A job with nothing to name goes to a fixed bucket rather than
 	// producing an empty path component.
-	empty := source.Candidate{}
-	if got := destinationFor(empty); got != "audiobooks/unknown" {
+	if got := destinationFor(""); got != "audiobooks/unknown" {
 		t.Errorf("destinationFor(empty) = %q, want audiobooks/unknown", got)
 	}
 }

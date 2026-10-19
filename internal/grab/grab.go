@@ -51,6 +51,11 @@ type Grabber interface {
 	// check Status first. A transfer the downloader no longer knows about
 	// returns an error rather than a guess.
 	Located(ctx context.Context, id ID) ([]string, error)
+
+	// Cancel stops a transfer and deletes its partial files. A transfer
+	// the downloader no longer knows about is a no-op, not an error: the
+	// bytes are already gone or never started.
+	Cancel(ctx context.Context, id ID) error
 }
 
 // ID is a downloader's own identifier for a transfer.

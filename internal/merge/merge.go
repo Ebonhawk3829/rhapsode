@@ -61,9 +61,10 @@ type Result struct {
 // One input file is passed through as-is (the library contract wants one
 // .m4b, and it already is one). Several inputs are merged with
 // --no-conversion: the sources are already the audio the user confirmed, and
-// re-encoding would spend an hour degrading it. The output is named after
-// the book title — the tag driver and the shelving step both key on it.
-func (m *Merger) Merge(ctx context.Context, title string, inputs []string) (Result, error) {
+// re-encoding would spend an hour degrading it. The output is named
+// <slug>-<title-slug>.m4b: the title keeps an `ls` readable, the job slug
+// keeps two jobs for the same title from racing on one path.
+func (m *Merger) Merge(ctx context.Context, slug, title string, inputs []string) (Result, error) {
 	if title == "" {
 		return Result{}, fmt.Errorf("merge: empty title")
 	}
@@ -71,7 +72,7 @@ func (m *Merger) Merge(ctx context.Context, title string, inputs []string) (Resu
 		return Result{}, fmt.Errorf("merge: no input files")
 	}
 
-	out := m.outputPath(title)
+	out := m.outputPath(slug, title)
 	if err := os.MkdirAll(m.staging, 0o755); err != nil {
 		return Result{}, fmt.Errorf("merge: staging: %w", err)
 	}
@@ -103,11 +104,15 @@ func (m *Merger) Merge(ctx context.Context, title string, inputs []string) (Resu
 	return Result{Path: out, Merged: true}, nil
 }
 
-// outputPath is the merged file's staging path: the slug-safe title with the
-// .m4b extension. Path-safe characters only — the shelving step re-derives
-// the library path from the tagged metadata, so this name is scratch.
-func (m *Merger) outputPath(title string) string {
-	return path.Join(m.staging, slugify(title)+".m4b")
+// outputPath is the merged file's staging path. Path-safe characters only
+// — the shelving step re-derives the library path from the tagged metadata,
+// so this name is scratch.
+func (m *Merger) outputPath(slug, title string) string {
+	name := slugify(title)
+	if slug != "" {
+		name = slugify(slug) + "-" + name
+	}
+	return path.Join(m.staging, name+".m4b")
 }
 
 // execRunner runs m4b-tool with the given arguments.

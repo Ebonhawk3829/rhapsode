@@ -13,9 +13,8 @@
 // probed live, 2026-10-18. But the page always shows the raw Info Hash, and
 // main.js's own "valid" branch builds the magnet from exactly that hash plus
 // a hardcoded tracker list. Rhapsode takes that branch always: read the hash
-// from the page, magnet it with the trackers below. The trackers are extracted
-// from main.js (testdata holds the extraction too, in trackers.txt) and are
-// the site's canonical list, so health behaves like any ABB client's magnet.
+// from the page, magnet it with the trackers below. The trackers are the
+// site's canonical list, so health behaves like any ABB client's magnet.
 package abb
 
 import (
@@ -188,7 +187,7 @@ var (
 )
 
 func isNotFound(html string) bool {
-	return strings.Contains(html, notFoundRe.String()) &&
+	return notFoundRe.MatchString(html) &&
 		!strings.Contains(html, noResultsSentinel)
 }
 

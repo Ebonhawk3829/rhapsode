@@ -54,7 +54,7 @@ func New(library, absURL, absToken, libraryID string) *Shelver {
 // Shelve copies the finished file into its library path and triggers the ABS
 // scan. It returns the library path the book landed at.
 func (s *Shelver) Shelve(ctx context.Context, src string, m Tagged) (string, error) {
-	destDir, err := LibraryPath(s.library, m)
+	destDir, fileName, err := libraryTarget(s.library, m)
 	if err != nil {
 		return "", err
 	}
@@ -62,7 +62,7 @@ func (s *Shelver) Shelve(ctx context.Context, src string, m Tagged) (string, err
 		return "", fmt.Errorf("shelve: mkdir: %w", err)
 	}
 
-	dest := path.Join(destDir, m.Title+".m4b")
+	dest := path.Join(destDir, fileName+".m4b")
 	tmp := dest + ".part"
 
 	if err := copyFile(src, tmp); err != nil {
@@ -98,18 +98,26 @@ type Tagged struct {
 // "Stand-Alone Title" placeholder). The sequence lives in metadata, never in
 // a path, so no position number appears here.
 func LibraryPath(library string, m Tagged) (string, error) {
+	dir, _, err := libraryTarget(library, m)
+	return dir, err
+}
+
+// libraryTarget derives the contract directory and file stem for one book.
+// Both go through cleanSegment: the filename must satisfy the same
+// no-colon/no-hash/no-separator contract as the directories.
+func libraryTarget(library string, m Tagged) (dir, stem string, err error) {
 	author := cleanSegment(m.Author)
 	title := cleanSegment(m.Title)
 	if author == "" || title == "" {
-		return "", fmt.Errorf("shelve: author and title are required for the library path")
+		return "", "", fmt.Errorf("shelve: author and title are required for the library path")
 	}
 	if m.Series != "" {
 		series := cleanSegment(m.Series)
 		if series != "" {
-			return path.Join(library, author, series, title), nil
+			return path.Join(library, author, series, title), title, nil
 		}
 	}
-	return path.Join(library, author, title), nil
+	return path.Join(library, author, title), title, nil
 }
 
 // cleanSegment makes one path segment library-contract safe: no colons, no
@@ -141,7 +149,7 @@ func cleanSegment(s string) string {
 
 // scan asks ABS to rescan the library.
 func (s *Shelver) scan(ctx context.Context) error {
-	url := fmt.Sprintf("%s/api/library/%s/scan", s.absURL, s.libraryID)
+	url := fmt.Sprintf("%s/api/libraries/%s/scan", s.absURL, s.libraryID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return err

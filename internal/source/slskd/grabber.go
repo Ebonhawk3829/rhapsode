@@ -117,8 +117,7 @@ func (g *Grabber) Located(ctx context.Context, id grab.ID) ([]string, error) {
 // load fetches one batch, reporting a batch slskd does not know as nil
 // rather than an error: Unknown is a state the caller reconciles, while a
 // transport failure is an error the caller retries.
-func (g *Grabber) load(ctx context.Context, id grab.ID) (*batch, error) {
-	b, err := g.client.batchByID(ctx, string(id))
+func (g *Grabber) load(ctx context.Context, id grab.ID) (*batch, error) {	b, err := g.client.batchByID(ctx, string(id))
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
@@ -139,6 +138,28 @@ func (g *Grabber) localPath(p string) string {
 		return g.localRoot + strings.TrimPrefix(p, g.root)
 	}
 	return path.Join(g.localRoot, p)
+}
+
+// Cancel stops a batch's transfers and removes them with their partial
+// files. An unknown batch is a no-op: the bytes are already gone.
+func (g *Grabber) Cancel(ctx context.Context, id grab.ID) error {
+	b, err := g.load(ctx, id)
+	if err != nil {
+		return err
+	}
+	if b == nil {
+		return nil
+	}
+	for _, t := range b.Transfers {
+		if err := g.client.cancelTransfer(ctx, b.Username, t.ID, true); err != nil {
+			var apiErr *APIError
+			if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // aggregate folds a peer's transfer records into one state.

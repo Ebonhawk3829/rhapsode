@@ -41,7 +41,7 @@ func TestMergeSingleFilePassesThrough(t *testing.T) {
 		return nil
 	})
 
-	res, err := m.Merge(context.Background(), "The Black Prism", []string{src})
+	res, err := m.Merge(context.Background(), "the-black-prism-72fc7a3d", "The Black Prism", []string{src})
 	if err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestMergeSingleFilePassesThrough(t *testing.T) {
 	if res.Merged {
 		t.Error("Result.Merged = true for a pass-through")
 	}
-	if res.Path != filepath.Join(staging, "the-black-prism.m4b") {
+	if res.Path != filepath.Join(staging, "the-black-prism-72fc7a3d-the-black-prism.m4b") {
 		t.Errorf("path = %q", res.Path)
 	}
 	got, err := os.ReadFile(res.Path)
@@ -73,14 +73,14 @@ func TestMergeMultiFileInvokesM4bTool(t *testing.T) {
 	})
 
 	inputs := []string{"/staged/part1.m4b", "/staged/part2.m4b", "/staged/part3.m4b"}
-	res, err := m.Merge(context.Background(), "The Black Prism", inputs)
+	res, err := m.Merge(context.Background(), "the-black-prism-72fc7a3d", "The Black Prism", inputs)
 	if err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
 	if !res.Merged {
 		t.Error("Result.Merged = false for a multi-file merge")
 	}
-	if res.Path != filepath.Join(staging, "the-black-prism.m4b") {
+	if res.Path != filepath.Join(staging, "the-black-prism-72fc7a3d-the-black-prism.m4b") {
 		t.Errorf("path = %q", res.Path)
 	}
 	// The contract: every input, the output, no re-encoding, no cache.
@@ -102,7 +102,7 @@ func TestMergeToolFailureSurfacesTail(t *testing.T) {
 	m, _ := newTestMerger(t, func(context.Context, []string) error {
 		return errors.New("exit status 1: chapter detection failed")
 	})
-	_, err := m.Merge(context.Background(), "Book", []string{"/a.m4b", "/b.m4b"})
+	_, err := m.Merge(context.Background(), "slug-1", "Book", []string{"/a.m4b", "/b.m4b"})
 	if err == nil {
 		t.Fatal("a tool failure vanished")
 	}
@@ -115,17 +115,17 @@ func TestMergeOutputMustExist(t *testing.T) {
 	// A tool that exits 0 without producing the file is a failure, not a
 	// success — the tag driver would otherwise tag a ghost.
 	m, _ := newTestMerger(t, func(context.Context, []string) error { return nil })
-	if _, err := m.Merge(context.Background(), "Book", []string{"/a.m4b", "/b.m4b"}); err == nil {
+	if _, err := m.Merge(context.Background(), "slug-1", "Book", []string{"/a.m4b", "/b.m4b"}); err == nil {
 		t.Fatal("missing output accepted")
 	}
 }
 
 func TestMergeRejectsEmptyTitleAndInputs(t *testing.T) {
 	m, _ := newTestMerger(t, nil)
-	if _, err := m.Merge(context.Background(), "", []string{"/a.m4b"}); err == nil {
+	if _, err := m.Merge(context.Background(), "slug-1", "", []string{"/a.m4b"}); err == nil {
 		t.Error("empty title accepted")
 	}
-	if _, err := m.Merge(context.Background(), "Book", nil); err == nil {
+	if _, err := m.Merge(context.Background(), "slug-1", "Book", nil); err == nil {
 		t.Error("empty inputs accepted")
 	}
 }

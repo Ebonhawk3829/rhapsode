@@ -9,6 +9,7 @@ import (
 
 	"github.com/Ebonhawk3829/rhapsode/internal/catalog"
 	"github.com/Ebonhawk3829/rhapsode/internal/request"
+	"github.com/Ebonhawk3829/rhapsode/internal/store"
 )
 
 // indexHTML is the whole UI.
@@ -24,59 +25,63 @@ var indexHTML = template.Must(template.New("index").Parse(`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rhapsode</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 720px; padding: 0 1rem; color: #222; }
-  h1 { font-size: 1.4rem; }
-  form.search { display: flex; gap: .5rem; margin: 1rem 0 2rem; }
-  form.search input { flex: 1; font-size: 1rem; padding: .5rem; }
-  .work { border: 1px solid #ddd; border-radius: 6px; padding: .75rem 1rem; margin-bottom: .75rem; }
-  .work h2 { font-size: 1.05rem; margin: 0 0 .25rem; }
-  .work .meta { color: #666; font-size: .9rem; }
-  .releases { margin: .5rem 0 0; padding: 0; list-style: none; }
-  form.inline { display: inline; margin: 0; }
-  .releases li { display: flex; justify-content: space-between; align-items: baseline; padding: .25rem 0; border-top: 1px dotted #eee; }
-  .releases .id { font-family: monospace; font-size: .8rem; color: #888; }
-  button { font-size: .85rem; padding: .25rem .75rem; cursor: pointer; }
-  .empty { color: #888; font-style: italic; }
-</style>
+<style>` + sharedCSS + `</style>
 </head>
 <body>
-<h1>rhapsode</h1>
+<div class="page">
+<header class="topbar">
+  <a class="brand" href="/">rhapsode</a>
+  {{if .ShowJobsNav}}<nav><a href="/jobs">jobs</a></nav>{{end}}
+</header>
+{{if .Degraded}}
+<div class="banner warn" role="status">Degraded: {{range $i, $d := .Degraded}}{{if $i}}, {{end}}{{$d}}{{end}} unconfigured — results will be thin.</div>
+{{end}}
 <form class="search" method="get" action="/">
-  <input type="search" name="q" placeholder="Search for an audiobook&hellip;" value="{{.Query}}" autofocus>
-  <button type="submit">Search</button>
+  <input type="search" name="q" placeholder="Author, series, title, ISBN, ASIN…" value="{{.Query}}" autofocus aria-label="Search for an audiobook">
+  <button class="btn primary" type="submit">Search</button>
 </form>
 {{if .Query}}
   {{if .Works}}
+    <p class="sub">{{len .Works}} work{{if gt (len .Works) 1}}s{{end}} for &ldquo;{{.Query}}&rdquo; — pick the edition you want.</p>
     {{range .Works}}
-    <div class="work">
-      <h2>{{.Title}}</h2>
-      <div class="meta">{{.Author}}{{if .Series}} &middot; {{.Series}}{{end}}</div>
-      <ul class="releases">
-        {{range .Releases}}
-        <li>
-          <span>{{.Narrator}}{{if .Publisher}} &middot; {{.Publisher}}{{end}}{{if .PublishedYear}} &middot; {{.PublishedYear}}{{end}} <span class="id">{{.Identifier.Kind}}:{{.Identifier.Value}}</span></span>
-          <form method="post" action="/jobs" class="inline">
-            <input type="hidden" name="title" value="{{.WorkTitle}}">
-            <input type="hidden" name="author" value="{{.WorkAuthor}}">
-            <input type="hidden" name="series" value="{{.WorkSeries}}">
-            <input type="hidden" name="narrator" value="{{.Narrator}}">
-            <input type="hidden" name="publisher" value="{{.Publisher}}">
-            <input type="hidden" name="publishedYear" value="{{.PublishedYear}}">
-            <input type="hidden" name="identifierKind" value="{{.Identifier.Kind}}">
-            <input type="hidden" name="identifierValue" value="{{.Identifier.Value}}">
-            <input type="hidden" name="query" value="{{.Query}}">
-            <button type="submit">Request</button>
-          </form>
-        </li>
-        {{end}}
-      </ul>
-    </div>
+    <section class="card" aria-label="{{.Title}}">
+      <div class="title">{{.Title}}</div>
+      <div class="byline">{{.Author}}{{if .Series}} &middot; {{.Series}}{{end}}</div>
+      {{range .Releases}}
+      <div class="release">
+        <span>{{.Narrator}}{{if .Publisher}} &middot; {{.Publisher}}{{end}}{{if .PublishedYear}} &middot; {{.PublishedYear}}{{end}} <span class="id">{{.Identifier.Kind}}:{{.Identifier.Value}}</span></span>
+        <form method="post" action="/jobs" class="inline">
+          <input type="hidden" name="title" value="{{.WorkTitle}}">
+          <input type="hidden" name="author" value="{{.WorkAuthor}}">
+          <input type="hidden" name="series" value="{{.Series}}">
+          <input type="hidden" name="seriesSequence" value="{{.SeriesSequence}}">
+          <input type="hidden" name="narrator" value="{{.Narrator}}">
+          <input type="hidden" name="publisher" value="{{.Publisher}}">
+          <input type="hidden" name="publishedYear" value="{{.PublishedYear}}">
+          <input type="hidden" name="description" value="{{.Description}}">
+          <input type="hidden" name="genre" value="{{.Genre}}">
+          <input type="hidden" name="identifierKind" value="{{.Identifier.Kind}}">
+          <input type="hidden" name="identifierValue" value="{{.Identifier.Value}}">
+          <input type="hidden" name="query" value="{{.Query}}">
+          <button class="btn primary" type="submit">Request</button>
+        </form>
+      </div>
+      {{end}}
+    </section>
     {{end}}
   {{else}}
     <p class="empty">No match for &ldquo;{{.Query}}&rdquo;.</p>
+    <form method="post" action="/jobs" class="inline">
+      <input type="hidden" name="title" value="{{.Query}}">
+      <input type="hidden" name="query" value="{{.Query}}">
+      <button class="btn" type="submit">Request anyway with this query</button>
+    </form>
+    <p class="meta">The sources will be searched on the raw text; no catalogue metadata will pre-fill the tags.</p>
   {{end}}
+{{else}}
+  <p class="sub">Search the catalogues, confirm the edition, pick the copy. Downloads, verification, tagging and shelving run from the job page.</p>
 {{end}}
+</div>
 </body>
 </html>`))
 
@@ -84,6 +89,13 @@ var indexHTML = template.Must(template.New("index").Parse(`<!doctype html>
 type indexView struct {
 	Query string
 	Works []*catalogWorkView
+	// Degraded names the pieces running below full strength: providers or
+	// sources left unconfigured. Blank details mean off, and off means the
+	// UI says so instead of silently returning thin results.
+	Degraded []string
+	// ShowJobsNav renders the jobs link. The jobs page itself omits it: a
+	// link to the page you are on is noise.
+	ShowJobsNav bool
 }
 
 // catalogReleaseView is one release row in the HTML: the release fields plus
@@ -92,7 +104,11 @@ type catalogReleaseView struct {
 	*catalog.Release
 	WorkTitle  string
 	WorkAuthor string
-	WorkSeries string
+	// Genre flattens the release's genre list for the hidden form field.
+	Genre string
+	// Query is the raw search text, kept so catalogue-less requests still
+	// carry something to search sources with.
+	Query string
 }
 
 // catalogWorkView is the JSON shape of a Work, reused for HTML rendering so
@@ -116,7 +132,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	v := indexView{Query: q}
+	v := indexView{Query: q, Degraded: s.degraded(), ShowJobsNav: true}
 
 	if q != "" {
 		works, err := s.cat.Search(r.Context(), q)
@@ -134,13 +150,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 				Series: wk.Series,
 			})
 			for _, r := range wk.Releases {
+				genre := ""
+				if len(r.Genres) > 0 {
+					genre = r.Genres[0]
+				}
 				v.Works[len(v.Works)-1].Releases = append(
 					v.Works[len(v.Works)-1].Releases,
 					&catalogReleaseView{
 						Release:    r,
 						WorkTitle:  wk.Title,
 						WorkAuthor: wk.Author,
-						WorkSeries: wk.Series,
+						Genre:      genre,
+						Query:      q,
 					},
 				)
 			}
@@ -172,6 +193,8 @@ func (s *Server) handleCreateJobForm(w http.ResponseWriter, r *http.Request) {
 		Narrator:       r.PostFormValue("narrator"),
 		Publisher:      r.PostFormValue("publisher"),
 		PublishedYear:  r.PostFormValue("publishedYear"),
+		Description:    r.PostFormValue("description"),
+		Genre:          r.PostFormValue("genre"),
 		Identifier: request.ID{
 			Kind:  r.PostFormValue("identifierKind"),
 			Value: r.PostFormValue("identifierValue"),
@@ -184,9 +207,43 @@ func (s *Server) handleCreateJobForm(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	// Back to the list of current jobs: the user sees their request queueing.
-	http.Redirect(w, r, "/jobs", http.StatusSeeOther)
-	_ = job
+	// Land on the new job's page: the confirm screen is where the request
+	// goes next, and the jobs list links every row there too.
+	http.Redirect(w, r, "/jobs/"+job.ID, http.StatusSeeOther)
+}
+
+// stateLabel renders a job state as a human action line: the pill should
+// say what the job needs, not the machine's internal name for it. Labels
+// use normal title case — lowercase pills read as code, not status.
+func stateLabel(s store.State) string {
+	switch s {
+	case store.Pending:
+		return "Queued"
+	case store.Searching:
+		return "Searching"
+	case store.Confirm:
+		return "Pick a Copy"
+	case store.Downloading:
+		return "Downloading"
+	case store.Verifying:
+		return "Verifying"
+	case store.Merging:
+		return "Merging"
+	case store.TagReview:
+		return "Review Tags"
+	case store.Tagging:
+		return "Tagging"
+	case store.Shelving:
+		return "Shelving"
+	case store.Done:
+		return "Shelved"
+	case store.Failed:
+		return "Failed"
+	case store.Cancelled:
+		return "Cancelled"
+	default:
+		return string(s)
+	}
 }
 
 // handleJobsPage lists the current job queue. The redirect target of a
@@ -199,29 +256,50 @@ func (s *Server) handleJobsPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>rhapsode — jobs</title>`)
-	b.WriteString(`<style>body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:720px;padding:0 1rem;}
-table{border-collapse:collapse;width:100%;}
-td,th{border-bottom:1px solid #eee;padding:.4rem .5rem;text-align:left;font-size:.9rem;}
-.state-Done{color:#070;}.state-Failed{color:#c00;}.state-Cancelled{color:#888;}
-.bar{background:#eee;border-radius:3px;height:6px;width:100%;overflow:hidden;}
-.bar>div{background:#36c;height:6px;}</style></head><body>`)
-	b.WriteString(`<h1><a href="/" style="text-decoration:none;color:inherit">rhapsode</a> &middot; jobs</h1>`)
-	b.WriteString(`<table><tr><th>Title</th><th>State</th><th>Progress</th><th>Source</th></tr>`)
+	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>rhapsode · jobs</title><style>`)
+	b.WriteString(sharedCSS)
+	b.WriteString(`</style></head><body><div class="page">`)
+	b.WriteString(`<header class="topbar"><a class="brand" href="/">rhapsode</a></header>`)
+	b.WriteString(`<h1>Jobs</h1>`)
 	if jobs == nil {
-		b.WriteString(`<tr><td colspan="4" style="color:#888;font-style:italic">No jobs.</td></tr>`)
-	}
-	for _, j := range jobs {
-		bar := ""
-		if j.Progress > 0 {
-			bar = fmt.Sprintf(`<div class="bar"><div style="width:%.0f%%"></div></div>`, j.Progress*100)
+		b.WriteString(`<p class="empty">No jobs yet — <a href="/">search the catalogues</a> to start one.</p>`)
+	} else {
+		visible := 0
+		for _, j := range jobs {
+			if j.State != store.Done {
+				visible++
+			}
 		}
-		b.WriteString(`<tr><td>` + template.HTMLEscapeString(j.Title) + `</td>`)
-		b.WriteString(`<td class="state-` + template.HTMLEscapeString(string(j.State)) + `">` + template.HTMLEscapeString(string(j.State)) + `</td>`)
-		b.WriteString(`<td>` + bar + fmt.Sprintf("%.0f%%", j.Progress*100) + `</td>`)
-		b.WriteString(`<td>` + template.HTMLEscapeString(j.Source) + `</td></tr>`)
+		if visible == 0 {
+			b.WriteString(`<p class="empty">Everything shelved — <a href="/">search the catalogues</a> for the next one.</p>`)
+		} else {
+			b.WriteString(`<table class="jobs"><tr><th>Title</th><th>State</th><th>Progress</th><th></th></tr>`)
+			for _, j := range jobs {
+				if j.State == store.Done {
+					continue
+				}
+				bar := ""
+				if j.Progress > 0 {
+					bar = fmt.Sprintf(`<div class="bar"><div style="width:%.0f%%"></div></div>`, j.Progress*100)
+				}
+				b.WriteString(`<tr><td><a class="rowlink" href="/jobs/` + template.HTMLEscapeString(j.ID) + `">` + template.HTMLEscapeString(j.Title) + `</a>`)
+				if j.Author != "" {
+					b.WriteString(`<div class="meta">` + template.HTMLEscapeString(j.Author) + `</div>`)
+				}
+				b.WriteString(`</td>`)
+				b.WriteString(`<td><span class="pill state-` + template.HTMLEscapeString(string(j.State)) + `">` + template.HTMLEscapeString(stateLabel(j.State)) + `</span></td>`)
+				b.WriteString(`<td>` + bar + fmt.Sprintf("%.0f%%", j.Progress*100) + `</td>`)
+				if j.State.Terminal() {
+					b.WriteString(`<td><form class="inline" method="post" action="/jobs/` + template.HTMLEscapeString(j.ID) + `/clear"><button class="btn" type="submit">Clear</button></form></td>`)
+				} else {
+					b.WriteString(`<td></td>`)
+				}
+				b.WriteString(`</tr>`)
+			}
+			b.WriteString(`</table>`)
+		}
 	}
-	b.WriteString(`</table></body></html>`)
+	b.WriteString(`</div></body></html>`)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(b.String()))

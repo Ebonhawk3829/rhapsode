@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/Ebonhawk3829/rhapsode/internal/store"
+	"github.com/Ebonhawk3829/rhapsode/internal/tag"
 )
 
 // confirmFile is one selectable file on the confirm screen.
@@ -70,7 +71,7 @@ func (s *Server) handleConfirmJob(w http.ResponseWriter, r *http.Request) {
 
 	job, err := s.requests.Confirm(r.Context(), jobID, body.CandidateID, selected)
 	if err != nil {
-		writeError(w, http.StatusConflict, err)
+		writeError(w, statusFor(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -93,7 +94,7 @@ func (s *Server) handleRejectCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.requests.RejectCandidate(jobID, body.CandidateID)
 	if err != nil {
-		writeError(w, http.StatusConflict, err)
+		writeError(w, statusFor(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -102,16 +103,26 @@ func (s *Server) handleRejectCandidate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	job, err := s.requests.Cancel(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusConflict, err)
+		writeError(w, statusFor(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+// statusFor maps domain errors onto HTTP codes: a missing job or candidate
+// is 404, a wrong-state transition is 409.
+func statusFor(err error) int {
+	if errors.Is(err, store.ErrNotFound) {
+		return http.StatusNotFound
+	}
+	return http.StatusConflict
 }
 
 // jobPageHTML is the detail view for one job. For a job in confirm it is the
 // decision screen; for every other state it is a status page.
 var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
 	"startsWith": startsWith,
+	"stateLabel": stateLabel,
 	"Mul":        Mul,
 }).Parse(`<!doctype html>
 <html lang="en">
@@ -119,66 +130,96 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Job.Title}} — rhapsode</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 860px; padding: 0 1rem; color: #222; }
-  h1 { font-size: 1.3rem; }
-  .meta { color: #666; font-size: .9rem; margin-bottom: 1rem; }
-  .candidate { border: 1px solid #ddd; border-radius: 6px; padding: .75rem 1rem; margin-bottom: .75rem; }
-  .candidate.band-accept { border-color: #4a4; }
-  .candidate.band-reject { border-color: #d99; background: #fffaf8; }
-  .reasons { color: #555; font-size: .85rem; margin: .25rem 0; }
-  .reasons span { display: inline-block; margin-right: .75rem; }
-  .hit { color: #262; } .miss { color: #a33; }
-  ul.files { margin: .25rem 0; padding-left: 1.2rem; font-size: .85rem; font-family: monospace; }
-  form.inline { display: inline-block; margin: 0; }
-  button { font-size: .85rem; padding: .25rem .75rem; cursor: pointer; }
-  button.danger { color: #a11; }
-  .state { display: inline-block; padding: .1rem .5rem; border-radius: 4px; background: #eee; font-size: .85rem; }
-  .progressbar { background:#eee; border-radius:3px; height:6px; width:100%; overflow:hidden; margin:.4rem 0; }
-  .progressbar>div { background:#36c; height:6px; }
-</style>
+<style>` + sharedCSS + `</style>
 </head>
 <body>
-<h1><a href="/jobs" style="text-decoration:none;color:inherit">&larr;</a> {{.Job.Title}}</h1>
-<div class="meta">{{.Job.Author}}{{if .Job.Narrator}} &middot; {{.Job.Narrator}}{{end}}
- &middot; state <span class="state">{{.Job.State}}</span>
-{{if .Job.Error}} &middot; error: {{.Job.Error}}{{end}}
- &middot; <form class="inline" method="post" action="/jobs/{{.Job.ID}}/cancel"><button class="danger" type="submit">Cancel job</button></form>
-</div>
-{{if .Confirming}}
+<div class="page">
+<header class="topbar">
+  <a class="brand" href="/">rhapsode</a>
+  <nav><a href="/jobs">jobs</a></nav>
+</header>
+<h1>{{.Job.Title}}</h1>
+<p class="sub">{{.Job.Author}}{{if .Job.Narrator}} &middot; read by {{.Job.Narrator}}{{end}}{{if .Job.Series}} &middot; {{.Job.Series}}{{if .Job.SeriesSequence}} #{{.Job.SeriesSequence}}{{end}}{{end}}</p>
+<p>
+  <span class="pill state-{{.Job.State}}">{{stateLabel .Job.State}}</span>
+  <form class="inline" method="post" action="/jobs/{{.Job.ID}}/cancel"><button class="btn danger" type="submit">Cancel job</button></form>
+</p>
+{{if .Job.Error}}<div class="banner bad" role="alert">{{.Job.Error}}</div>{{end}}
+{{if .TagReview}}
+<form method="post" action="/jobs/{{.Job.ID}}/tags">
+  <h2>Review tags</h2>
+  <p class="sub">Proposed from the catalogue record. Edit before confirming — tone writes exactly this.</p>
+  <div class="field"><label for="f-title">Title</label><input id="f-title" name="title" value="{{.Job.Title}}"></div>
+  <div class="field"><label for="f-author">Author</label><input id="f-author" name="author" value="{{.Job.Author}}"></div>
+  <div class="field"><label for="f-series">Series</label><input id="f-series" name="series" value="{{.Job.Series}}"></div>
+  <div class="field"><label for="f-seq">Series sequence</label><input id="f-seq" name="seriesSequence" value="{{.Job.SeriesSequence}}"></div>
+  <div class="field"><label for="f-narr">Narrator</label><input id="f-narr" name="narrator" value="{{.Job.Narrator}}"></div>
+  <div class="field"><label for="f-pub">Publisher</label><input id="f-pub" name="publisher" value="{{.Job.Publisher}}"></div>
+  <div class="field"><label for="f-year">Published year</label><input id="f-year" name="publishedYear" value="{{.Job.PublishedYear}}"></div>
+  <div class="field"><label for="f-genre">Genre</label><input id="f-genre" name="genre" value="{{.Job.Genre}}"></div>
+  <div class="field"><label for="f-desc">Description</label><textarea id="f-desc" name="description">{{.Job.Description}}</textarea></div>
+  <div class="actions"><button class="btn primary" type="submit">Confirm tags and shelve</button></div>
+</form>
+{{else if .Confirming}}
   {{if .Sections}}
-  <form method="post" action="/jobs/{{.Job.ID}}/confirm">
+    <p class="sub">Pick the copy to download — or reject offers that are not the edition. Scores compare within a source, not across them.</p>
     {{range .Sections}}
     {{if .Candidates}}
-    <h2>{{.Name}}{{if .EmptyNote}} <small class="meta">{{.EmptyNote}}</small>{{end}}</h2>
+    <h2>{{.Name}}{{if .EmptyNote}} <span class="meta">{{.EmptyNote}}</span>{{end}}</h2>
     {{range .Candidates}}
-    <div class="candidate band-{{.Band}}">
-      <strong>{{if .Username}}{{.Username}}{{else}}unknown share{{end}}</strong>
-      &middot; {{.Format}}{{if .Bitrate}} {{.Bitrate}}kbps{{end}}
-      &middot; {{.RenderSize}}
-      <div class="reasons">
-        {{range .Reasons}}<span class="{{if (startsWith . "✓")}}hit{{else}}miss{{end}}">{{.}}</span>{{end}}
-      </div>
-      <ul class="files">
-        {{range .Files}}
-        <li><label><input type="checkbox" name="file" value="{{.Name}}" checked> {{.Name}}</label></li>
-        {{end}}
+    <section class="card tone-{{.Band}}" aria-label="offer from {{if .Username}}{{.Username}}{{else}}unknown share{{end}}">
+      <div class="title">{{if .Username}}{{.Username}}{{else}}unknown share{{end}} <span class="pill band-{{.Band}}">{{.Band}}</span></div>
+      <div class="byline">{{.Format}}{{if .Bitrate}} &middot; {{.Bitrate}}kbps{{end}} &middot; {{.RenderSize}}</div>
+      {{if .IsTorrent}}
+      <ul class="reasons">
+        {{range .Reasons}}<li class="{{if (startsWith . "✓")}}hit{{else if (startsWith . "✗")}}miss{{else}}note{{end}}">{{.}}</li>{{end}}
       </ul>
-      <button type="submit" name="candidateId" value="{{.ID}}">Download these files</button>
-      <button type="submit" name="candidateId" value="{{.ID}}" formaction="/jobs/{{$.Job.ID}}/reject" class="danger">Reject offer</button>
-    </div>
+      {{else}}
+      <ul class="reasons">
+        {{range $i, $r := .Reasons}}{{if lt $i 3}}<li class="{{if (startsWith $r "✓")}}hit{{else if (startsWith $r "✗")}}miss{{else}}note{{end}}">{{$r}}</li>{{else}}<li class="evidence-extra {{if (startsWith $r "✓")}}hit{{else if (startsWith $r "✗")}}miss{{else}}note{{end}}">{{$r}}</li>{{end}}{{end}}
+      </ul>
+      {{if gt (len .Reasons) 3}}<button type="button" class="evidence-toggle" onclick="this.closest('.card').classList.toggle('show-all');this.textContent=this.closest('.card').classList.contains('show-all')?'show less':'show all evidence'">show all evidence</button>{{end}}
+      {{end}}
+      {{if .IsTorrent}}
+      <p class="meta">Torrent — file list resolves at grab time.{{if .ExternalURL}} <a href="{{.ExternalURL}}" target="_blank" rel="noopener">View listing</a>{{end}}</p>
+      <form method="post" action="/jobs/{{$.Job.ID}}/confirm">
+        <div class="actions">
+          <button class="btn primary" type="submit" name="candidateId" value="{{.ID}}">Download torrent</button>
+      </form>
+      <form method="post" action="/jobs/{{$.Job.ID}}/reject" class="inline">
+        <button class="btn danger" type="submit" name="candidateId" value="{{.ID}}">Reject offer</button>
+      </form>
+        </div>
+      {{else}}
+      <form method="post" action="/jobs/{{$.Job.ID}}/confirm">
+        <ul class="files">
+          {{range .Files}}
+          <li><label><input type="checkbox" name="file" value="{{.Name}}" checked> <code>{{.Name}}</code></label></li>
+          {{end}}
+        </ul>
+        <div class="actions">
+          <button class="btn primary" type="submit" name="candidateId" value="{{.ID}}">Download these files</button>
+      </form>
+      <form method="post" action="/jobs/{{$.Job.ID}}/reject" class="inline">
+        <button class="btn danger" type="submit" name="candidateId" value="{{.ID}}">Reject offer</button>
+      </form>
+        </div>
+      {{end}}
+    </section>
     {{end}}
     {{end}}
     {{end}}
-  </form>
   {{else}}
-  <p class="meta">No offers left. <a href="/jobs">Back to the queue</a>.</p>
+  <p class="empty">No offers left. <a href="/jobs">Back to the queue</a>.</p>
   {{end}}
 {{else}}
-  <div class="meta">Progress {{printf "%.0f" (Mul .Job.Progress 100)}}%</div>
-  <div class="progressbar"><div style="width:{{printf "%.0f" (Mul .Job.Progress 100)}}%"></div></div>
-  {{if .GrabID}}<p class="meta">Downloading via {{.Grabber}} ({{.GrabID}})</p>{{end}}
+  <div class="card">
+    <div class="title">Progress {{printf "%.0f" (Mul .Job.Progress 100)}}%</div>
+    <div class="bar" style="margin:.5rem 0"><div style="width:{{printf "%.0f" (Mul .Job.Progress 100)}}%"></div></div>
+    {{if .GrabID}}<p class="meta">Downloading via {{.Grabber}} ({{.GrabID}})</p>{{end}}
+  </div>
 {{end}}
+</div>
 </body>
 </html>`))
 
@@ -186,6 +227,7 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
 type jobView struct {
 	Job        *store.Job
 	Confirming bool
+	TagReview  bool
 	Sections   []*sourceSection
 	Grabber    string
 	GrabID     string
@@ -209,12 +251,17 @@ func sectionFor(name string) *sourceSection {
 
 // candidateView is one row on the confirm screen, pre-shaped for HTML.
 type candidateView struct {
-	ID         string
-	Username   string
-	Format     string
-	Bitrate    int
-	RenderSize string
-	Band       string
+	ID          string
+	Username    string
+	Format      string
+	Bitrate     int
+	RenderSize  string
+	Band        string
+	ExternalURL string
+	// IsTorrent marks magnet offers: no file list exists pre-grab, so the
+	// row renders without checkboxes and the detail path never shows as a
+	// "file". The path is transport plumbing, not a download location.
+	IsTorrent bool
 	Reasons    []string
 	Files      []store.CandidateFile
 }
@@ -237,7 +284,8 @@ func (s *Server) handleJobPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v := jobView{Job: job}
-	if job.State == store.Confirm {
+	switch job.State {
+	case store.Confirm:
 		v.Confirming = true
 		cands, err := s.st.Candidates(job.ID, 0)
 		if err != nil {
@@ -260,14 +308,16 @@ func (s *Server) handleJobPage(w http.ResponseWriter, r *http.Request) {
 				order = append(order, sec)
 			}
 			sec.Candidates = append(sec.Candidates, &candidateView{
-				ID:         c.ID,
-				Username:   c.Username,
-				Format:     c.Format,
-				Bitrate:    c.Bitrate,
-				RenderSize: renderSize(c.SizeBytes),
-				Band:       c.Band,
-				Reasons:    c.Reasons,
-				Files:      c.Files,
+				ID:          c.ID,
+				Username:    c.Username,
+				Format:      c.Format,
+				Bitrate:     c.Bitrate,
+				RenderSize:  renderSize(c.SizeBytes),
+				Band:        c.Band,
+				IsTorrent:   c.Kind == "torrent",
+				ExternalURL: c.ExternalURL,
+				Reasons:     c.Reasons,
+				Files:       c.Files,
 			})
 		}
 		for _, sec := range order {
@@ -280,7 +330,9 @@ func (s *Server) handleJobPage(w http.ResponseWriter, r *http.Request) {
 				v.Sections = append(v.Sections, sec)
 			}
 		}
-	} else {
+	case store.TagReview:
+		v.TagReview = true
+	default:
 		v.Grabber = job.Grabber
 		v.GrabID = job.GrabID
 	}
@@ -317,16 +369,80 @@ func (s *Server) handleConfirmForm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Checked boxes are the selection; none checked means the whole offer.
+	// Sizes are restored from the stored candidate: the form posts names
+	// only, and the slskd enqueue replays names with sizes.
 	names := r.Form["file"]
 	selected := make([]store.CandidateFile, 0, len(names))
-	for _, name := range names {
-		selected = append(selected, store.CandidateFile{Name: name})
+	if len(names) > 0 {
+		c, err := s.st.CandidateByID(jobID, candidateID)
+		if err != nil {
+			writeError(w, statusFor(err), err)
+			return
+		}
+		byName := make(map[string]int64, len(c.Files))
+		for _, f := range c.Files {
+			byName[f.Name] = f.Size
+		}
+		for _, name := range names {
+			selected = append(selected, store.CandidateFile{Name: name, Size: byName[name]})
+		}
 	}
 	if _, err := s.requests.Confirm(r.Context(), jobID, candidateID, selected); err != nil {
-		writeError(w, http.StatusConflict, err)
+		writeError(w, statusFor(err), err)
 		return
 	}
 	http.Redirect(w, r, "/jobs/"+jobID, http.StatusSeeOther)
+}
+
+// handleTagsForm accepts the tag-review form: the user's edited proposal.
+func (s *Server) handleTagsForm(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	m := tag.Metadata{
+		Title:          r.PostFormValue("title"),
+		Author:         r.PostFormValue("author"),
+		Series:         r.PostFormValue("series"),
+		SeriesSequence: r.PostFormValue("seriesSequence"),
+		Narrator:       r.PostFormValue("narrator"),
+		Publisher:      r.PostFormValue("publisher"),
+		PublishedYear:  r.PostFormValue("publishedYear"),
+		Description:    r.PostFormValue("description"),
+		Genre:          r.PostFormValue("genre"),
+	}
+	if _, err := s.requests.ConfirmTags(r.Context(), jobID, m); err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	http.Redirect(w, r, "/jobs/"+jobID, http.StatusSeeOther)
+}
+
+// handleConfirmTags is the JSON variant of the tag-review confirm.
+func (s *Server) handleConfirmTags(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	var body struct {
+		Title          string `json:"title"`
+		Author         string `json:"author"`
+		Series         string `json:"series"`
+		SeriesSequence string `json:"seriesSequence"`
+		Narrator       string `json:"narrator"`
+		Publisher      string `json:"publisher"`
+		PublishedYear  string `json:"publishedYear"`
+		Description    string `json:"description"`
+		Genre          string `json:"genre"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	job, err := s.requests.ConfirmTags(r.Context(), jobID, tag.Metadata(body))
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
 }
 
 // handleRejectForm accepts the reject button's formaction target.
@@ -342,7 +458,7 @@ func (s *Server) handleRejectForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.requests.RejectCandidate(jobID, candidateID); err != nil {
-		writeError(w, http.StatusConflict, err)
+		writeError(w, statusFor(err), err)
 		return
 	}
 	http.Redirect(w, r, "/jobs/"+jobID, http.StatusSeeOther)
@@ -351,10 +467,28 @@ func (s *Server) handleRejectForm(w http.ResponseWriter, r *http.Request) {
 // handleCancelForm accepts the job page's cancel button.
 func (s *Server) handleCancelForm(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.requests.Cancel(r.PathValue("id")); err != nil {
-		writeError(w, http.StatusConflict, err)
+		writeError(w, statusFor(err), err)
 		return
 	}
 	http.Redirect(w, r, "/jobs", http.StatusSeeOther)
+}
+
+// handleClearForm removes a terminal job from the queue.
+func (s *Server) handleClearForm(w http.ResponseWriter, r *http.Request) {
+	if err := s.requests.Clear(r.PathValue("id")); err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	http.Redirect(w, r, "/jobs", http.StatusSeeOther)
+}
+
+// handleClearJob is the JSON variant.
+func (s *Server) handleClearJob(w http.ResponseWriter, r *http.Request) {
+	if err := s.requests.Clear(r.PathValue("id")); err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
 // logf is a short alias so handlers do not reach for the log package.

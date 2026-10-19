@@ -9,7 +9,6 @@ package abb
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/Ebonhawk3829/rhapsode/internal/store"
 
@@ -30,20 +29,6 @@ func (s *Source) Name() string { return "audiobookbay" }
 // Kind is the transport slskd handles use — torrents.
 func (s *Source) Kind() source.Kind { return source.Torrent }
 
-// Policy is how hard ABB may be pushed.
-//
-// ABB is bot-hostile and FlareSolverr solves once per challenge, so the
-// limits are conservative: one search at a time, seconds between requests.
-func (s *Source) Policy() source.Policy {
-	return source.Policy{
-		Rate:        3 * time.Second,
-		Burst:       1,
-		Concurrency: 1,
-		Backoff:     10 * time.Second,
-		Cooldown:    5 * time.Minute,
-	}
-}
-
 // Search turns listings into candidates.
 //
 // A listing's format/bitrate/size are catalogue data, not peer text, and the
@@ -61,7 +46,7 @@ func (s *Source) Search(ctx context.Context, rel source.Release) ([]source.Candi
 	}
 	out := make([]source.Candidate, 0, len(listings))
 	for _, l := range listings {
-		out = append(out, l.candidate())
+		out = append(out, s.candidate(l))
 	}
 	return out, nil
 }
@@ -71,11 +56,17 @@ func (s *Source) Search(ctx context.Context, rel source.Release) ([]source.Candi
 type magnetRef struct {
 	DetailPath string
 	Title      string
+	PostedDate string
 	Files      []source.File // unknown until the torrent is added; listed for verify
 }
 
-// Grab resolves the listing into a magnet URI.
-func (s *Source) Grab(ctx context.Context, c source.Candidate) (source.Handle, error) {
+// PostedDateOf reads the listing's posted date back out for display.
+func (m magnetRef) PostedDateOf() string { return m.PostedDate }
+
+// Grab resolves the listing into a magnet URI. The slug is accepted for
+// interface parity with sources that stage per-job directories; torrents
+// land where Transmission is configured to put them, so it is unused.
+func (s *Source) Grab(ctx context.Context, c source.Candidate, _ string) (source.Handle, error) {
 	ref, ok := c.Handle.Ref.(magnetRef)
 	if !ok {
 		return source.Handle{}, errors.New("abb: handle is not an ABB magnet reference")
@@ -118,7 +109,7 @@ func (s *Source) Rebuild(username string, files []store.CandidateFile) source.Ha
 }
 
 // candidate converts a listing into a source.Candidate.
-func (l listing) candidate() source.Candidate {
+func (s *Source) candidate(l listing) source.Candidate {
 	// The "file list" of a torrent offer is one entry naming the detail
 	// page; per-file selection does not apply to torrents and the path is
 	// what lets a persisted candidate re-resolve its magnet later.
@@ -130,10 +121,18 @@ func (l listing) candidate() source.Candidate {
 		Bitrate:   l.BitrateKbps,
 		SizeBytes: l.SizeMB * 1024 * 1024,
 		Files:     files,
-		RemoteDir: l.Posted,
+		// The detail path is the per-offer identity: it feeds the store's
+		// uniqueness constraint and the scorer's directory text (the slug
+		// carries title words). The posted date is display metadata, not
+		// identity — two listings posted the same day must not collide.
+		RemoteDir: l.DetailPath,
+		// ExternalURL links the confirm card out to the listing page: the
+		// scraper cannot extract genuinely useful per-torrent detail, and
+		// one click to read the page with human eyes is not a failure.
+		ExternalURL: s.client.base + l.DetailPath,
 		Handle: source.Handle{
 			Kind: source.Torrent,
-			Ref:  magnetRef{DetailPath: l.DetailPath, Title: l.Title, Files: files},
+			Ref:  magnetRef{DetailPath: l.DetailPath, Title: l.Title, PostedDate: l.Posted, Files: files},
 		},
 	}
 }

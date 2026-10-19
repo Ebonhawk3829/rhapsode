@@ -126,6 +126,33 @@ func Grade(rel source.Release, c source.Candidate) Result {
 		neg = append(neg, "✗ unknown format")
 	}
 
+	// Audio presence: a share with files but no known-audio extension is a
+	// companion-only offer (covers, epubs) — visible, but not rankable
+	// alongside real audio. Torrent offers carry no file list until grab
+	// time (their Files hold the detail path, not members), so they skip
+	// this check rather than failing it.
+	if len(c.Files) > 0 && !isTorrentPlaceholder(c) {
+		if hasAudio(c.Files) {
+			gained += 0.5
+			possible += 0.5
+			pos = append(pos, "✓ audio files in share")
+		} else {
+			neg = append(neg, "✗ no audio files in share (companions only?)")
+			possible += 2.0
+		}
+	}
+
+	// Transport confidence: a live peer was offering at search time; a
+	// torrent's swarm is unknown until the magnet resolves at grab time.
+	// Display only — no weight, so the scorer never fuses the two
+	// currencies into one number. Preference for live peers is expressed
+	// in the confirm screen's section order, not in the score. Torrents
+	// get no line at all: unknown availability is the default assumption,
+	// not news.
+	if c.Handle.Kind == source.P2P {
+		pos = append(pos, "✓ live peer offering now")
+	}
+
 	// These markers mean "not the wanted audio" whatever else looked right.
 	for _, m := range []string{"sample", "preview", "excerpt"} {
 		if contains(hay, m) {
@@ -150,6 +177,40 @@ func bandFor(s float64, neg []string) string {
 	default:
 		return BandReject
 	}
+}
+
+// audioExts are the container extensions that count as audio for the
+// presence check. Deliberately broad: the check answers "is there listenable
+// audio here", not "is it the library target" — that judgement is the
+// format switch above.
+var audioExts = map[string]bool{
+	"m4b": true, "m4a": true, "mp3": true, "flac": true,
+	"m4p": true, "ogg": true, "oga": true, "opus": true,
+	"wma": true, "wav": true, "aiff": true, "aif": true,
+}
+
+// hasAudio reports whether any file in the share carries an audio extension.
+func hasAudio(files []source.File) bool {
+	for _, f := range files {
+		ext := strings.ToLower(strings.TrimPrefix(path.Ext(f.Name), "."))
+		if audioExts[ext] {
+			return true
+		}
+	}
+	return false
+}
+
+// isTorrentPlaceholder reports whether the candidate's file list is a magnet
+// placeholder rather than a member list: one entry naming a detail path with
+// no size. Such offers skip the audio-presence check — there is nothing to
+// check yet, and failing them would down-rank every torrent for a missing
+// file list the source never had.
+func isTorrentPlaceholder(c source.Candidate) bool {
+	if len(c.Files) != 1 {
+		return false
+	}
+	f := c.Files[0]
+	return f.Size == 0 && (strings.HasPrefix(f.Name, "/") || strings.HasPrefix(f.Name, "http"))
 }
 
 // dirOf is the peer-side directory the share lives in. It falls back to the

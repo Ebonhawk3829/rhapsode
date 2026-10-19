@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"syscall"
 	"time"
@@ -47,7 +46,7 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 
 	var (
-		configPath  = flag.String("config", "/data/rhapsode.yaml", "path to the configuration file")
+		configPath  = flag.String("config", defaultConfigPath(), "path to the configuration file")
 		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
@@ -80,31 +79,45 @@ func run(configPath string) error {
 
 	// Audnexus enriches the scaffolds the Audible search produces: the
 	// scraper discovers, the catalogue declares. The join lives in catalog.
+	// Presence is the switch: a blank URL/base means that catalogue is off,
+	// and the omnisearch degrades to whatever remains.
 	nexus := audnexus.New(cfg.Providers.Audnexus.URL, cfg.Providers.Audnexus.Region)
 
-	providers := []metadata.Provider{
-		graphicaudio.New(cfg.Providers.GraphicAudio.URL),
-		audible.New(cfg.Providers.Audible.Base, cfg.Providers.Audible.FlareSolverr),
+	var providers []metadata.Provider
+	if cfg.Providers.GraphicAudio.URL != "" {
+		providers = append(providers, graphicaudio.New(cfg.Providers.GraphicAudio.URL))
+	} else {
+		log.Print("rhapsode: graphicaudio provider off (blank url); omnisearch degraded")
+	}
+	if cfg.Providers.Audible.Base != "" {
+		providers = append(providers, audible.New(cfg.Providers.Audible.Base, cfg.Providers.Audible.FlareSolverr))
+	} else {
+		log.Print("rhapsode: audible provider off (blank base); title-to-ASIN discovery degraded")
 	}
 	var cat = catalog.New(providers...).WithEnricher(nexus)
 
 	// Acquisition: slskd is both a source and a grabber, served by one
 	// client. ABB is the torrent source, served by the Transmission
 	// grabber. More of each hang off the same two maps.
+	// Presence is the switch here too: blank credentials mean the source
+	// is off, and jobs fail fast naming the missing piece.
 	var (
 		sources  []source.Source
 		grabbers = map[source.Kind]grab.Grabber{}
 	)
-	if cfg.Sources.Slskd.APIKey != "" {
+	if cfg.Sources.Slskd.URL != "" && cfg.Sources.Slskd.APIKey != "" {
 		client := slskd.New(cfg.Sources.Slskd.URL, cfg.Sources.Slskd.APIKey)
 		sources = append(sources, slskd.NewSource(client))
-		// slskd's download root is where its destinations resolve from. Both
-		// containers mount the same host downloads tree at the same /downloads
-		// prefix (the standardized layout), so one derived name serves both
-		// views; the grabber still translates through root/localRoot rather
-		// than assuming equality.
-		root := slskdDownloadsRoot(cfg)
-		grabbers[source.P2P] = slskd.NewGrabber(client, root, root)
+		// slskd's download root is where its destinations resolve from.
+		// slskd.yml sets `directories.downloads` (here
+		// /downloads/slskd-complete: slskd's view of the shared tree), and
+		// rhapsode reads the same tree through its own mount at
+		// paths.downloads. The two roots are passed separately so the
+		// grabber translates the prefix instead of assuming equality.
+		grabbers[source.P2P] = slskd.NewGrabber(client,
+			slskdRemoteRoot(), cfg.Paths.Downloads+"/slskd-complete")
+	} else {
+		log.Print("rhapsode: slskd source off (url and api_key both required); p2p offers unavailable")
 	}
 	if cfg.Sources.AudioBookBay.FlareSolverr != "" && cfg.Grabbers.Transmission.URL != "" {
 		abbClient := abb.New(
@@ -120,9 +133,15 @@ func run(configPath string) error {
 			cfg.Grabbers.Transmission.Dir,
 			cfg.Grabbers.Transmission.LocalDir,
 		)
+	} else {
+		log.Print("rhapsode: audiobookbay source off (flaresolverr and transmission url required); torrent offers unavailable")
+	}
+	if len(sources) == 0 {
+		log.Print("rhapsode: no sources configured; jobs will fail at search until one is added")
 	}
 
 	runner := job.New(st, sources, grabbers)
+	runner.SetDownloads(cfg.Paths.Downloads)
 
 	// Post-download tooling: merge on local staging, tag with tone, shelve
 	// into the library and scan ABS. All four live in the same image as the
@@ -175,6 +194,15 @@ func run(configPath string) error {
 	}
 }
 
+// defaultConfigPath honours RHAPSODE_CONFIG (set by the Docker image) with
+// the in-image path as fallback.
+func defaultConfigPath() string {
+	if v := os.Getenv("RHAPSODE_CONFIG"); v != "" {
+		return v
+	}
+	return "/data/rhapsode.yaml"
+}
+
 // abbDefault picks the ABB base URL, defaulting to the domain the user finds
 // more reliable than the mirrors.
 func abbDefault(u string) string {
@@ -184,14 +212,14 @@ func abbDefault(u string) string {
 	return u
 }
 
-// slsdDownloadsRoot is slskd's download root as slskd sees it.
+// slskdRemoteRoot is slskd's download root as slskd sees it.
 //
-// slskd resolves every batch destination against its own configured root;
-// rhapsode's mount of the same host tree is named differently, and the
-// grabber translates between the two. The slskd-side name is derived from
-// rhapsode's view rather than configured separately: both containers mount
-// the same downloads directory, so the only difference is the mount point,
-// and one source of truth for the tree keeps them from drifting.
-func slskdDownloadsRoot(cfg *config.File) string {
-	return path.Join(path.Dir(cfg.Paths.Downloads), "slskd-complete")
+// slskd resolves every batch destination against its own configured root
+// (`directories.downloads` in slskd.yml). That value lives in slskd's
+// config, not rhapsode's — deriving it from rhapsode's paths was the bug
+// that pointed verify at /slskd-complete instead of
+// /downloads/slskd-complete. If slskd.yml ever changes, this changes with
+// it; the comment is the link.
+func slskdRemoteRoot() string {
+	return "/downloads/slskd-complete"
 }

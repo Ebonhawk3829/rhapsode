@@ -78,8 +78,6 @@ type Providers struct {
 type GraphicAudio struct {
 	// URL is the scraper's base URL.
 	URL string `yaml:"url"`
-	// Enabled turns the provider off without removing its configuration.
-	Enabled *bool `yaml:"enabled"`
 }
 
 // Audnexus is the public Audible metadata API.
@@ -88,8 +86,6 @@ type Audnexus struct {
 	URL string `yaml:"url"`
 	// Region selects the catalogue region.
 	Region string `yaml:"region"`
-	// Enabled turns the provider off without removing its configuration.
-	Enabled *bool `yaml:"enabled"`
 }
 
 // Audible is the Audible storefront search. It is the only title→ASIN
@@ -104,8 +100,6 @@ type Audible struct {
 	// this deployment the proxy is not optional. Empty means fetch direct,
 	// which only makes sense from a residential IP.
 	FlareSolverr string `yaml:"flaresolverr"`
-	// Enabled turns the provider off without removing its configuration.
-	Enabled *bool `yaml:"enabled"`
 }
 
 // Sources are the places copies are found.
@@ -126,8 +120,6 @@ type AudioBookBay struct {
 	// FlareSolverr is the challenge-solving proxy, already running for
 	// Prowlarr.
 	FlareSolverr string `yaml:"flaresolverr"`
-	// Enabled turns the source off without removing its configuration.
-	Enabled *bool `yaml:"enabled"`
 }
 
 // Slskd is the Soulseek client, used both as a source and as a grabber.
@@ -136,8 +128,6 @@ type Slskd struct {
 	URL string `yaml:"url"`
 	// APIKey authenticates to slskd. A secret; keep it in SOPS.
 	APIKey string `yaml:"api_key"`
-	// Enabled turns the source off without removing its configuration.
-	Enabled *bool `yaml:"enabled"`
 }
 
 // Grabbers are the downloaders.
@@ -162,8 +152,6 @@ type Transmission struct {
 	// reads the completed files through rhapsode's view, so the mapping
 	// between the two is configuration, not guesswork.
 	LocalDir string `yaml:"local_dir"`
-	// Enabled turns the grabber off without removing its configuration.
-	Enabled *bool `yaml:"enabled"`
 }
 
 // Notify is where failures are reported.
@@ -181,8 +169,6 @@ type Ntfy struct {
 	Topic string `yaml:"topic"`
 	// Token authenticates to ntfy, when the topic is protected.
 	Token string `yaml:"token"`
-	// Enabled turns notifications off without removing their configuration.
-	Enabled *bool `yaml:"enabled"`
 }
 
 // Load reads the configuration file at path, applies defaults, and validates
@@ -203,17 +189,40 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 
-	f.applyDefaults()
+	f.applyDefaults(hasTopLevelKey(raw, "providers"))
 	if err := f.validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &f, nil
 }
 
+// hasTopLevelKey reports whether the raw YAML contains a top-level `key:`.
+// The decoder cannot distinguish "block absent" from "block present with
+// blank values" after the fact; this raw scan preserves that distinction so
+// defaults apply to a missing block without refilling a deliberate blank.
+func hasTopLevelKey(raw []byte, key string) bool {
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		trimmed := bytes.TrimRight(line, " \t\r")
+		if len(trimmed) < len(key)+1 {
+			continue
+		}
+		if trimmed[0] == '#' {
+			continue
+		}
+		if string(trimmed[:len(key)]) == key && trimmed[len(key)] == ':' {
+			// Top-level keys start at column 0; indented keys are nested.
+			if line[0] != ' ' && line[0] != '\t' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // applyDefaults fills in the values that have a sensible default. Anything
 // deployment-specific — ports, credentials, hostnames — is left empty so that
 // validate can insist on it rather than guessing.
-func (f *File) applyDefaults() {
+func (f *File) applyDefaults(providersPresent bool) {
 	if f.Server.Listen == "" {
 		f.Server.Listen = "127.0.0.1:8099"
 	}
@@ -229,21 +238,25 @@ func (f *File) applyDefaults() {
 	if f.Paths.Library == "" {
 		f.Paths.Library = "/library"
 	}
-	if f.Providers.GraphicAudio.URL == "" {
+	// Provider URLs default only when the whole providers block is absent
+	// (a fresh minimal config). An explicitly blank URL means off — the
+	// degraded banner and the wiring gates both key off blankness, so
+	// defaults must not refill a deliberate blank.
+	if !providersPresent {
 		f.Providers.GraphicAudio.URL = "http://100.64.0.1:8092"
-	}
-	if f.Providers.Audnexus.URL == "" {
 		f.Providers.Audnexus.URL = "https://api.audnex.us"
+		// The storefront must match where the server's IP actually lands:
+		// audible.com geo-redirects a datacentre IP to its regional storefront,
+		// and following that redirect means searching the home page, not the
+		// search results. This deployment lands on .com.au, so the default
+		// is .com.au and the Audnexus region below agrees with it: ASINs
+		// are per-region edition identifiers, and an AU ASIN looked up in
+		// the US catalogue 404s.
+		f.Providers.Audible.Base = "https://www.audible.com.au"
+		f.Providers.Audnexus.Region = "au"
 	}
 	if f.Providers.Audnexus.Region == "" {
-		f.Providers.Audnexus.Region = "us"
-	}
-	// The storefront must match where the server's IP actually lands:
-	// audible.com geo-redirects a datacentre IP to its regional storefront,
-	// and following that redirect means searching the home page, not the
-	// search results. This deployment lands on .com.au.
-	if f.Providers.Audible.Base == "" {
-		f.Providers.Audible.Base = "https://www.audible.com.au"
+		f.Providers.Audnexus.Region = "au"
 	}
 }
 
@@ -252,6 +265,11 @@ func (f *File) applyDefaults() {
 // It checks only what would fail at runtime anyway, and it checks it at load
 // so the failure names the file rather than surfacing hours later as a
 // mysterious empty result.
+//
+// Presence is the switch: a component with its connection details filled in
+// is on; blank them (or comment them out) to turn it off. There are no
+// enabled flags — disabling means removing the details, and a degraded
+// deployment says so loudly in the UI rather than hiding behind a toggle.
 func (f *File) validate() error {
 	if f.Server.Listen == "" {
 		return fmt.Errorf("server.listen is required")
@@ -274,39 +292,8 @@ func (f *File) validate() error {
 	if f.Library.LibraryID == "" {
 		return fmt.Errorf("library.library_id is required")
 	}
-	if enabled(f.Providers.GraphicAudio.Enabled, f.Providers.GraphicAudio.URL != "") && f.Providers.GraphicAudio.URL == "" {
-		return fmt.Errorf("providers.graphicaudio.url is required when the provider is enabled")
-	}
-	if enabled(f.Providers.Audnexus.Enabled, f.Providers.Audnexus.URL != "") && f.Providers.Audnexus.URL == "" {
-		return fmt.Errorf("providers.audnexus.url is required when the provider is enabled")
-	}
-	if enabled(f.Sources.Slskd.Enabled, f.Sources.Slskd.URL != "") && f.Sources.Slskd.URL == "" {
-		return fmt.Errorf("sources.slskd.url is required when the source is enabled")
-	}
-	if enabled(f.Sources.AudioBookBay.Enabled, f.Sources.AudioBookBay.URL != "") && f.Sources.AudioBookBay.URL == "" {
-		return fmt.Errorf("sources.audiobookbay.url is required when the source is enabled")
-	}
-	if enabled(f.Grabbers.Transmission.Enabled, f.Grabbers.Transmission.URL != "") && f.Grabbers.Transmission.URL == "" {
-		return fmt.Errorf("grabbers.transmission.url is required when the grabber is enabled")
-	}
-	if enabled(f.Grabbers.Transmission.Enabled, f.Grabbers.Transmission.URL != "") && f.Grabbers.Transmission.LocalDir == "" {
-		return fmt.Errorf("grabbers.transmission.local_dir is required when the grabber is enabled: verification reads the files through rhapsode's own mount")
-	}
-	if enabled(f.Notify.Ntfy.Enabled, f.Notify.Ntfy.Topic != "") && f.Notify.Ntfy.Topic == "" {
-		return fmt.Errorf("notify.ntfy.topic is required when notifications are enabled")
-	}
+	// Optional components need no validation beyond their wiring gates in
+	// main: a blank URL means off, and half-filled credentials fail loudly
+	// at startup where the wiring checks them.
 	return nil
-}
-
-// enabled reports whether a component is switched on.
-//
-// An explicit flag always wins. Without one, a component is on when it is
-// configured: a URL the user has filled in is a component they want used, and
-// leaving it blank is how they say they do not. That is what lets a minimal
-// config work — it names only what it uses, and the rest stays off.
-func enabled(flag *bool, configured bool) bool {
-	if flag != nil {
-		return *flag
-	}
-	return configured
 }

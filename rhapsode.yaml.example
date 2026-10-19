@@ -35,29 +35,32 @@ library:
 providers:
   # The self-hosted GraphicAudio scraper. GA releases are full-cast
   # dramatisations and carry ISBNs, so this is asked first.
+  # Blank the URL to turn the provider off.
   graphicaudio:
     url: http://100.64.0.1:8092
-    enabled: true
   # The public Audible metadata API. Covers the standard-narration releases GA
-  # has not done.
+  # has not done. Blank the URL to turn the provider off.
+  # Region must agree with the Audible storefront above: ASINs are per-region
+  # edition identifiers, and an AU ASIN looked up in the US catalogue 404s.
   audnexus:
     url: https://api.audnex.us
-    region: us
-    enabled: true
+    region: au
   # The Audible storefront search, scraped. The only title-to-ASIN discovery
   # surface: Audnexus is lookup-only, so without this the omnisearch finds
-  # only what the GA scraper indexes.
+  # only what the GA scraper indexes. Blank the base to turn it off.
+  # Base must be the storefront the server's IP geo-lands on (here .com.au):
+  # a .com base geo-redirects to the home page, and the parser finds nothing.
   audible:
-    base: https://www.audible.com
+    base: https://www.audible.com.au
     # Audible geo-redirects and throttles datacentre IPs; from this deployment
     # the scrape only works routed through the proxy (the same instance
     # Prowlarr already uses). Empty means direct, for home-server networks.
     flaresolverr: http://100.64.0.1:8191
-    enabled: true
 
 sources:
   # The torrent indexer. The .lu domain is the more reliable primary; mirrors
-  # are rotated on failure, not per request.
+  # are rotated on failure, not per request. Blank the URL and mirrors to turn
+  # the source off.
   audiobookbay:
     url: audiobookbay.lu
     mirrors: [audiobookbay.is]
@@ -65,12 +68,11 @@ sources:
     # ABB 503s datacentre IPs, so requiring it is deliberate: empty means the
     # source is off even with a URL.
     flaresolverr: http://100.64.0.1:8191
-    enabled: true
   # The Soulseek client, used both as a source and as a grabber.
+  # Blank the URL and key to turn it off.
   slskd:
     url: ""
     api_key: ""
-    enabled: false
     # The download root is derived, not configured: slskd's download
     # directory must be the sibling landing <dir of paths.downloads>/slskd-complete
     # (the standardized layout — slskd.yml `directories.downloads`), and
@@ -91,12 +93,11 @@ grabbers:
     # completed files through rhapsode's own mount, so the mapping between
     # the two views is spelled out rather than guessed.
     local_dir: /downloads/kt-complete
-    enabled: true
 
 notify:
   # Only failures and a single confirmation are sent; progress lives in the UI.
+  # Blank the URL or topic to turn notifications off.
   ntfy:
     url: ""
     topic: ""
     token: ""
-    enabled: false

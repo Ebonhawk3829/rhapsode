@@ -43,8 +43,10 @@ type Report struct {
 	// Reasons are the evidence lines, hits first — the same shape the
 	// scorer renders, so the UI and audit treat both uniformly.
 	Reasons []string
-	// DurationMS is the total audio duration across files, in
-	// milliseconds. Zero when no file reported a duration.
+	// DurationMS is tone's audio.duration unit as reported, summed across
+	// files. The unit is tone-version-dependent (seconds in current dumps,
+	// despite the name) and is audit display only — confirm against live
+	// `tone dump` output before trusting DurationString.
 	DurationMS float64
 	// Chapters is the chapter count of the first file that reports any —
 	// for a merged single-file release this is the book's chapter count.
@@ -112,9 +114,7 @@ func (v *Verifier) Inspect(paths []string, rel Release) (Report, error) {
 		if err != nil {
 			return report, fmt.Errorf("verify: dump %s: %w", p, err)
 		}
-		if report.DurationMS == 0 {
-			report.DurationMS = doc.Audio.Duration
-		}
+		report.DurationMS += doc.Audio.Duration
 		if report.Chapters == 0 {
 			report.Chapters = len(doc.Meta.Chapters)
 		}
@@ -153,11 +153,16 @@ func judgeFile(doc *toneDoc, rel Release) []string {
 
 	// Title: the tag must name the work. The album tag is accepted as a
 	// fallback because folder rips often carry the title only in album.
+	// A missing title tag is soft (mp3-era rips commonly lack it); only a
+	// present-but-wrong tag contradicts the release.
 	tagTitle := firstNonEmpty(doc.Meta.Title, doc.Meta.Album)
 	if rel.Title != "" {
-		if matchesTitle(tagTitle, rel.Title) {
+		switch {
+		case tagTitle == "":
+			out = append(out, "· no title tag (soft: folder rips often omit it)")
+		case matchesTitle(tagTitle, rel.Title):
 			out = append(out, "✓ title tag matches the release")
-		} else {
+		default:
 			out = append(out, fmt.Sprintf("✗ title tag %q does not match release %q", tagTitle, rel.Title))
 		}
 	}
@@ -179,11 +184,17 @@ func judgeFile(doc *toneDoc, rel Release) []string {
 	// the tag must agree. A missing narrator tag is soft (mp3 rips), a
 	// contradicting one is hard — a standard narration tagged where a GA
 	// dramatisation was requested is the wrong edition.
+	//
+	// Multi-narrator tags are split on the usual separators and matched
+	// per-voice: a release naming "Kaleo Griffith" passes a tag crediting
+	// "Kaleo Griffith, Jennifer Jill Araya". Any overlap passes — the
+	// check catches wrong-edition downloads (no shared voice at all), not
+	// incomplete credits.
 	if rel.Narrator != "" {
 		switch {
 		case doc.Meta.Narrator == "":
 			out = append(out, "· no narrator tag (soft: mp3 shares often omit it)")
-		case strings.EqualFold(doc.Meta.Narrator, rel.Narrator):
+		case matchesNarrator(doc.Meta.Narrator, rel.Narrator):
 			out = append(out, "✓ narrator tag matches the release")
 		default:
 			out = append(out, fmt.Sprintf("✗ narrator tag %q does not match release %q",
@@ -217,10 +228,44 @@ func judgeFile(doc *toneDoc, rel Release) []string {
 }
 
 // matchesTitle compares a tag value against the release field tolerantly:
-// case-insensitive, and tolerant of the bracketed qualifiers ("[Dramatized
-// Adaptation]") and punctuation catalogues and encoders disagree on.
+// case-insensitive, tolerant of the bracketed qualifiers ("[Dramatized
+// Adaptation]") and punctuation catalogues and encoders disagree on, and
+// tolerant of subtitles the tag adds after the release title
+// ("Isles of the Emberdark: A Cosmere Novel" contains the whole request).
+// The check is one-directional: the tag must contain the release title, not
+// merely share words with it — a tag naming a different book still fails.
 func matchesTitle(tag, want string) bool {
-	return strings.EqualFold(normalise(tag), normalise(want))
+	t, w := normalise(tag), normalise(want)
+	if t == w {
+		return true
+	}
+	return strings.Contains(t, w)
+}
+
+// matchesNarrator reports whether the release narrator is credited anywhere
+// in the tag's narrator field. Both sides split on the usual separators,
+// so "Kaleo Griffith" matches "Kaleo Griffith, Jennifer Jill Araya" in
+// either direction.
+func matchesNarrator(tag, want string) bool {
+	for _, t := range splitNames(tag) {
+		for _, w := range splitNames(want) {
+			if strings.EqualFold(normalise(t), normalise(w)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// splitNames splits a credit field on the separators encoders use.
+func splitNames(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		switch r {
+		case ',', ';', '&', '/', '|':
+			return true
+		}
+		return false
+	})
 }
 
 // normalise folds case and strips everything catalogues vary on: bracketed

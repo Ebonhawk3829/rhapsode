@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS job (
     narrator      TEXT NOT NULL DEFAULT '',
     publisher     TEXT NOT NULL DEFAULT '',
     published_year TEXT NOT NULL DEFAULT '',
+    description   TEXT NOT NULL DEFAULT '',
+    genre         TEXT NOT NULL DEFAULT '',
     id_kind       TEXT NOT NULL DEFAULT '',
     id_value      TEXT NOT NULL DEFAULT '',
     query         TEXT NOT NULL DEFAULT '',
@@ -74,6 +76,7 @@ CREATE TABLE IF NOT EXISTS job_candidate (
     -- What the source presents, verbatim.
     title       TEXT NOT NULL DEFAULT '',
     remote_dir  TEXT NOT NULL DEFAULT '',
+    external_url TEXT NOT NULL DEFAULT '',
     file_json   TEXT NOT NULL DEFAULT '[]',
 
     -- Summarised from the file list for ranking and display.

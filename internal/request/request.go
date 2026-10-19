@@ -33,9 +33,21 @@ func New(st *store.Store) *Creator {
 // from the same fields, so accepting a half-filled release here sticks the
 // user with a job that searches for nothing. Title is the only hard floor;
 // identifier is required when there is one to name.
+//
+// A second live job for the same release is refused: the retry path for a
+// failed download is the confirm screen's next candidate, never a second
+// job, so a duplicate request is user error. The error names the existing
+// job so the UI can link it.
 func (c *Creator) Request(rel Release) (*store.Job, error) {
 	if strings.TrimSpace(rel.Title) == "" {
 		return nil, fmt.Errorf("title is required")
+	}
+
+	slug := Slug(rel)
+	if existing, err := c.liveJobForSlug(slug); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return nil, fmt.Errorf("a live job for this release already exists (job %s, state %q)", existing.ID, existing.State)
 	}
 
 	j := &store.Job{
@@ -46,15 +58,33 @@ func (c *Creator) Request(rel Release) (*store.Job, error) {
 		Narrator:       strings.TrimSpace(rel.Narrator),
 		Publisher:      strings.TrimSpace(rel.Publisher),
 		PublishedYear:  strings.TrimSpace(rel.PublishedYear),
+		Description:    strings.TrimSpace(rel.Description),
+		Genre:          strings.TrimSpace(rel.Genre),
 		IdentifierKind: string(rel.Identifier.Kind),
 		IdentifierVal:  rel.Identifier.Value,
 		Query:          strings.TrimSpace(rel.Query),
-		Slug:           Slug(rel),
+		Slug:           slug,
 	}
 	if err := c.st.Create(j); err != nil {
 		return nil, fmt.Errorf("create job: %w", err)
 	}
 	return j, nil
+}
+
+// liveJobForSlug returns the non-terminal job holding a slug, or nil when
+// the slug is free. Terminal jobs (done/failed/cancelled) do not block:
+// re-requesting after a terminal outcome starts fresh in the same directory.
+func (c *Creator) liveJobForSlug(slug string) (*store.Job, error) {
+	jobs, err := c.st.List("")
+	if err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	for _, j := range jobs {
+		if j.Slug == slug && !j.State.Terminal() {
+			return j, nil
+		}
+	}
+	return nil, nil
 }
 
 // Release is the pick the UI submits: one edition of one work.
@@ -68,7 +98,12 @@ type Release struct {
 	// PublishedYear is the bare YYYY the catalogue reported; it rides the
 	// job so the tagger can write the library contract's publishing date.
 	PublishedYear string
-	Identifier    ID
+	// Description is the publisher's blurb; it rides the job so the tagger
+	// can write the library contract's description.
+	Description string
+	// Genre is the catalogue's genre for the release, for the tagger.
+	Genre      string
+	Identifier ID
 	// Query is the raw free-text the user typed, kept so catalogue-less
 	// requests still have something to search with.
 	Query string

@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -32,13 +31,4 @@ func ToneDumper(ctx context.Context) func(string) (string, error) {
 		}
 		return string(out), nil
 	}
-}
-
-// trimNoise strips the non-JSON chatter some tone versions emit on stderr
-// leakage into stdout, keeping only from the first '{'.
-func trimNoise(raw string) string {
-	if i := strings.Index(raw, "{"); i > 0 {
-		return raw[i:]
-	}
-	return raw
 }

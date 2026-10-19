@@ -56,16 +56,15 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("apply schema: %w", err)
 	}
 	// CREATE TABLE IF NOT EXISTS cannot widen an existing table, and jobs
-	// from before candidate confirmation still open cleanly. The column is
-	// additive; detect once and alter rather than version the schema the
-	// job built on.
+	// from before candidate confirmation still open cleanly. The columns
+	// are additive; detect once and alter rather than version the schema
+	// the job built on.
 	cols, err := s.db.Query(`PRAGMA table_info(job)`)
 	if err != nil {
 		return fmt.Errorf("inspect job table: %w", err)
 	}
 	defer cols.Close()
-	hasCandidate := false
-	hasYear := false
+	have := map[string]bool{}
 	for cols.Next() {
 		var (
 			cid, name, ctype string
@@ -75,26 +74,17 @@ func (s *Store) migrate() error {
 		if err := cols.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
 			return fmt.Errorf("inspect job table: %w", err)
 		}
-		if name == "confirmed_candidate_id" {
-			hasCandidate = true
-		}
-		if name == "published_year" {
-			hasYear = true
-		}
+		have[name] = true
 	}
 	if err := cols.Err(); err != nil {
 		return fmt.Errorf("inspect job table: %w", err)
 	}
-	if !hasCandidate {
-		if _, err := s.db.Exec(
-			`ALTER TABLE job ADD COLUMN confirmed_candidate_id TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("add confirmed_candidate_id: %w", err)
-		}
-	}
-	if !hasYear {
-		if _, err := s.db.Exec(
-			`ALTER TABLE job ADD COLUMN published_year TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("add published_year: %w", err)
+	for _, col := range []string{"confirmed_candidate_id", "published_year", "description", "genre"} {
+		if !have[col] {
+			if _, err := s.db.Exec(
+				`ALTER TABLE job ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("add %s: %w", col, err)
+			}
 		}
 	}
 	// The candidate table pre-dates its uniqueness constraint in databases
@@ -102,6 +92,42 @@ func (s *Store) migrate() error {
 	// constraint in place; rebuild the table when the constraint is absent.
 	if err := s.rebuildCandidates(); err != nil {
 		return err
+	}
+	// Additive column for existing new-shape tables: the rebuild above only
+	// fires when the constraint is absent, so a table with the constraint
+	// but without external_url needs the plain ALTER path.
+	if err := s.addCandidateColumn("external_url"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// addCandidateColumn adds a TEXT column to job_candidate when absent.
+func (s *Store) addCandidateColumn(col string) error {
+	cols, err := s.db.Query(`PRAGMA table_info(job_candidate)`)
+	if err != nil {
+		return fmt.Errorf("inspect job_candidate: %w", err)
+	}
+	defer cols.Close()
+	for cols.Next() {
+		var (
+			cid, name, ctype string
+			notnull, pk      int
+			dflt             sql.NullString
+		)
+		if err := cols.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("inspect job_candidate: %w", err)
+		}
+		if name == col {
+			return cols.Err()
+		}
+	}
+	if err := cols.Err(); err != nil {
+		return fmt.Errorf("inspect job_candidate: %w", err)
+	}
+	if _, err := s.db.Exec(
+		`ALTER TABLE job_candidate ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add %s: %w", col, err)
 	}
 	return nil
 }
@@ -147,6 +173,7 @@ func (s *Store) rebuildCandidates() error {
 			username    TEXT NOT NULL DEFAULT '',
 			title       TEXT NOT NULL DEFAULT '',
 			remote_dir  TEXT NOT NULL DEFAULT '',
+			external_url TEXT NOT NULL DEFAULT '',
 			file_json   TEXT NOT NULL DEFAULT '[]',
 			size_bytes  INTEGER NOT NULL DEFAULT 0,
 			format      TEXT NOT NULL DEFAULT '',
@@ -163,7 +190,7 @@ func (s *Store) rebuildCandidates() error {
 		)`,
 		`INSERT OR IGNORE INTO job_candidate_rebuild SELECT
 			id, job_id, created_at, source, kind, username,
-			title, remote_dir, file_json, size_bytes, format, bitrate,
+			title, remote_dir, '', file_json, size_bytes, format, bitrate,
 			upload_speed_kbps, free_slot, score, band, reasons_json,
 			rejected_at, confirmed_at, selected_json
 		FROM job_candidate`,
@@ -196,6 +223,9 @@ const (
 	Verifying State = "verifying"
 	// Merging means parts are being combined into one file.
 	Merging State = "merging"
+	// TagReview means the merge landed and the proposed tags await the
+	// user's edit and confirmation.
+	TagReview State = "tag-review"
 	// Tagging means metadata is being written.
 	Tagging State = "tagging"
 	// Shelving means the file is being moved into the library.
@@ -229,6 +259,8 @@ type Job struct {
 	Narrator       string
 	Publisher      string
 	PublishedYear  string
+	Description    string
+	Genre          string
 	IdentifierKind string
 	IdentifierVal  string
 	Query          string
@@ -274,12 +306,14 @@ func (s *Store) Create(j *Job) error {
 		INSERT INTO job (
 			id, created_at, updated_at, state,
 			title, author, series, series_seq, narrator, publisher, published_year,
+			description, genre,
 			id_kind, id_value, query,
 			slug, source, grabber, grab_id, confirmed_candidate_id,
 			phase, progress, attempts, error
-		) VALUES (?,?,?,?, ?,?,?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?)`,
+		) VALUES (?,?,?,?, ?,?,?,?,?,?,?, ?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?)`,
 		j.ID, ts(j.CreatedAt), ts(j.UpdatedAt), string(j.State),
 		j.Title, j.Author, j.Series, j.SeriesSequence, j.Narrator, j.Publisher, j.PublishedYear,
+		j.Description, j.Genre,
 		j.IdentifierKind, j.IdentifierVal, j.Query,
 		j.Slug, j.Source, j.Grabber, j.GrabID, j.ConfirmedCandidateID,
 		j.Phase, j.Progress, j.Attempts, j.Error,
@@ -295,6 +329,7 @@ func (s *Store) Get(id string) (*Job, error) {
 	row := s.db.QueryRow(`
 		SELECT id, created_at, updated_at, state,
 		       title, author, series, series_seq, narrator, publisher, published_year,
+		       description, genre,
 		       id_kind, id_value, query,
 		       slug, source, grabber, grab_id, confirmed_candidate_id,
 		       phase, progress, attempts, error
@@ -315,6 +350,7 @@ func (s *Store) List(state State) ([]*Job, error) {
 	q := `
 		SELECT id, created_at, updated_at, state,
 		       title, author, series, series_seq, narrator, publisher, published_year,
+		       description, genre,
 		       id_kind, id_value, query,
 		       slug, source, grabber, grab_id, confirmed_candidate_id,
 		       phase, progress, attempts, error
@@ -347,6 +383,8 @@ func (s *Store) List(state State) ([]*Job, error) {
 //
 // The release fields are not updated: a job's identity is fixed at creation,
 // and a job that changed which book it was acquiring would be a different job.
+// The tag-review step is the one exception: confirming edited tags rewrites
+// the release fields via UpdateTags, not here.
 func (s *Store) Update(j *Job) error {
 	j.UpdatedAt = time.Now().UTC()
 	res, err := s.db.Exec(`
@@ -371,6 +409,62 @@ func (s *Store) Update(j *Job) error {
 	}
 	if n == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateTags rewrites a job's release fields after the tag-review confirm.
+// This is the only path that mutates identity post-creation: the user
+// reviewed the proposal and confirmed exactly this set.
+func (s *Store) UpdateTags(j *Job) error {
+	j.UpdatedAt = time.Now().UTC()
+	res, err := s.db.Exec(`
+		UPDATE job SET
+			updated_at = ?, state = ?,
+			title = ?, author = ?, series = ?, series_seq = ?,
+			narrator = ?, publisher = ?, published_year = ?,
+			description = ?, genre = ?,
+			phase = ?
+		WHERE id = ?`,
+		ts(j.UpdatedAt), string(j.State),
+		j.Title, j.Author, j.Series, j.SeriesSequence,
+		j.Narrator, j.Publisher, j.PublishedYear,
+		j.Description, j.Genre,
+		j.Phase,
+		j.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("update tags %s: %w", j.ID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update tags %s: %w", j.ID, err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Delete removes a terminal job and its candidates. Only terminal jobs
+// (done, failed, cancelled) can be cleared: a live job holds downloads and
+// decisions that deletion would orphan.
+func (s *Store) Delete(id string) error {
+	j, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	if !j.State.Terminal() {
+		return fmt.Errorf("job %s is %q, not terminal; cancel it first", id, j.State)
+	}
+	if _, err := s.db.Exec(`DELETE FROM job_candidate WHERE job_id = ?`, id); err != nil {
+		return fmt.Errorf("delete candidates for %s: %w", id, err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM job_event WHERE job_id = ?`, id); err != nil {
+		return fmt.Errorf("delete events for %s: %w", id, err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM job WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete job %s: %w", id, err)
 	}
 	return nil
 }
@@ -440,6 +534,7 @@ func scanJob(r rowScanner) (*Job, error) {
 	if err := r.Scan(
 		&j.ID, &created, &updated, &state,
 		&j.Title, &j.Author, &j.Series, &j.SeriesSequence, &j.Narrator, &j.Publisher, &j.PublishedYear,
+		&j.Description, &j.Genre,
 		&j.IdentifierKind, &j.IdentifierVal, &j.Query,
 		&j.Slug, &j.Source, &j.Grabber, &j.GrabID, &j.ConfirmedCandidateID,
 		&j.Phase, &j.Progress, &j.Attempts, &j.Error,

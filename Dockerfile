@@ -5,6 +5,13 @@
 # it. m4b-tool already carries tone, ffmpeg, mp4v2 and fdkaac, so the runtime
 # stage adds only the binary and a healthcheck client.
 
+# Pin the base by digest: every merge/tag assumption (m4b-tool flags, tone
+# atoms, ffmpeg behaviour) depends on this image's tooling. The repo
+# publishes only `latest`, so the digest is the pin — refresh it
+# deliberately, not on every build.
+# (Declared before the first FROM so both stages can use it.)
+ARG M4B_TOOL_DIGEST=sha256:3154399019ed6a2d26fd477f71a1367e4c60e605d0188699028ad3444afd3c70
+
 FROM golang:1.27 AS build
 
 WORKDIR /src
@@ -24,7 +31,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags "-X github.com/Ebonhawk3829/rhapsode/internal/version.Version=${VERSION}" \
     -o /out/rhapsode ./cmd/rhapsode
 
-FROM sandreas/m4b-tool:latest
+FROM sandreas/m4b-tool@${M4B_TOOL_DIGEST}
 
 # curl is not in the base image (only the php83-curl extension), and the
 # healthcheck needs a client. ca-certificates is added for the outbound HTTPS
@@ -49,7 +56,7 @@ ENV RHAPSODE_CONFIG=/data/rhapsode.yaml
 
 # /healthz is deliberately shallow — it does not touch the database or the
 # network, so a slow upstream cannot mark a correctly-running container
-# unhealthy.
+# unhealthy. The port must match server.listen in rhapsode.yaml.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8099/healthz || exit 1
 

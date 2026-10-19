@@ -268,50 +268,6 @@ type transfer struct {
 	StartedAt        *flexTime `json:"startedAt"`
 }
 
-// downloads returns transfers grouped by peer.
-//
-// slskd 0.26+ returns a flat array of users with nested directories; older
-// versions return a per-user tree. Both are accepted.
-func (c *Client) downloads(ctx context.Context) (map[string][]transfer, error) {
-	var flat []struct {
-		Username    string `json:"username"`
-		Directories []struct {
-			Directory string     `json:"directory"`
-			Files     []transfer `json:"files"`
-		} `json:"directories"`
-	}
-	flatErr := c.do(ctx, http.MethodGet, "/api/v0/transfers/downloads", nil, &flat)
-	if flatErr == nil {
-		out := make(map[string][]transfer, len(flat))
-		for _, u := range flat {
-			var ts []transfer
-			for _, d := range u.Directories {
-				ts = append(ts, d.Files...)
-			}
-			out[u.Username] = ts
-		}
-		return out, nil
-	}
-
-	var tree map[string]struct {
-		Directories []struct {
-			Transfers []transfer `json:"transfers"`
-		} `json:"directories"`
-	}
-	if err := c.do(ctx, http.MethodGet, "/api/v0/transfers/downloads", nil, &tree); err != nil {
-		return nil, fmt.Errorf("transfers: %v / %v", flatErr, err)
-	}
-	out := make(map[string][]transfer, len(tree))
-	for user, rec := range tree {
-		var ts []transfer
-		for _, d := range rec.Directories {
-			ts = append(ts, d.Transfers...)
-		}
-		out[user] = ts
-	}
-	return out, nil
-}
-
 // batch is the reply of GET /api/v0/transfers/downloads/batches/{id}.
 //
 // The batch is the unit rhapsode enqueues, so it is also the unit verify

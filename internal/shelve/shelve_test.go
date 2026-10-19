@@ -88,7 +88,7 @@ func TestShelveCopiesAndRenamesAtomically(t *testing.T) {
 
 	var scanned bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/library/lib-1/scan" && r.Method == http.MethodPost {
+		if r.URL.Path == "/api/libraries/lib-1/scan" && r.Method == http.MethodPost {
 			scanned = true
 			w.WriteHeader(http.StatusOK)
 			return

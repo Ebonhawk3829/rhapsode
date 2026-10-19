@@ -124,6 +124,34 @@ func TestInspectToleratesBracketedTitleQualifiers(t *testing.T) {
 	}
 }
 
+func TestInspectAcceptsSubtitleExtendedTitle(t *testing.T) {
+	// The embedded title may carry a subtitle the catalogue omits
+	// ("Isles of the Emberdark: A Cosmere Novel" for the request "Isles of
+	// the Emberdark"): the whole request is contained in the tag, so it
+	// passes. A tag naming a different book still fails.
+	extended := strings.Replace(gaDump, `"The Emperor's Soul",`, `"The Emperor's Soul: A Cosmere Short Story",`, 1)
+	report, err := verifierWith(extended).Inspect([]string{"/staged/book.m4b"}, gaRelease())
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if !report.OK {
+		t.Errorf("a subtitle-extended title rejected: %v", report.Reasons)
+	}
+}
+
+func TestInspectAcceptsCoNarratedTag(t *testing.T) {
+	// Dual narration credits both voices; the release names one. Any
+	// overlap passes — the check catches wrong editions, not credits.
+	co := strings.Replace(gaDump, `"narrator": "Sasha Morton",`, `"narrator": "Sasha Morton, William Demeritt",`, 1)
+	report, err := verifierWith(co).Inspect([]string{"/staged/book.m4b"}, gaRelease())
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if !report.OK {
+		t.Errorf("a co-narrated tag rejected: %v", report.Reasons)
+	}
+}
+
 func TestInspectEveryFileMustPass(t *testing.T) {
 	// A batch with one wrong-titled part is a wrong download, not a partial
 	// success.

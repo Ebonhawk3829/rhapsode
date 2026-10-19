@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Ebonhawk3829/rhapsode/internal/grab"
 	"github.com/Ebonhawk3829/rhapsode/internal/merge"
@@ -29,9 +28,10 @@ type fakeSource struct {
 	lastRel source.Release
 }
 
-func (f *fakeSource) Name() string          { return f.name }
-func (f *fakeSource) Kind() source.Kind     { return source.P2P }
-func (f *fakeSource) Policy() source.Policy { return source.Policy{Rate: time.Second} }
+func (f *fakeSource) Name() string { return f.name }
+func (f *fakeSource) Kind() source.Kind {
+	return source.P2P
+}
 func (f *fakeSource) Search(_ context.Context, rel source.Release) ([]source.Candidate, error) {
 	f.lastRel = rel
 	if f.err != nil {
@@ -39,7 +39,7 @@ func (f *fakeSource) Search(_ context.Context, rel source.Release) ([]source.Can
 	}
 	return f.cands, nil
 }
-func (f *fakeSource) Grab(context.Context, source.Candidate) (source.Handle, error) {
+func (f *fakeSource) Grab(context.Context, source.Candidate, string) (source.Handle, error) {
 	f.grabs++
 	return source.Handle{Kind: source.P2P, Ref: p2pTestRef{}}, nil
 }
@@ -99,6 +99,8 @@ func (f *fakeGrabber) Located(_ context.Context, _ grab.ID) ([]string, error) {
 	}
 	return []string{path}, nil
 }
+
+func (f *fakeGrabber) Cancel(context.Context, grab.ID) error { return nil }
 
 func newTestRunner(t *testing.T, srcs []source.Source, g grab.Grabber) (*Runner, *store.Store) {
 	t.Helper()
@@ -312,9 +314,28 @@ func TestDownloadCompletes(t *testing.T) {
 	if got.Phase != string(grab.Active) {
 		t.Errorf("phase = %q, want active", got.Phase)
 	}
-	// The scripted pipeline runs through: a completed download is verified,
-	// merged, tagged and shelved within successive sweeps. Each advance is
-	// one lifecycle step, so sweep until the job reaches a terminal state.
+	// The scripted pipeline runs through: a completed download is verified
+	// and merged within successive sweeps, then parks in tag review for
+	// the user's edit+confirm. Each advance is one lifecycle step, so
+	// sweep until tag review, confirm the tags, then sweep to terminal.
+	for {
+		j, _ = st.Get(j.ID)
+		if j.State.Terminal() || j.State == store.TagReview {
+			break
+		}
+		if err := r.advance(context.Background(), j); err != nil {
+			t.Fatalf("advance %s: %v", j.State, err)
+		}
+	}
+	got, _ = st.Get(j.ID)
+	if got.State != store.TagReview {
+		t.Fatalf("state = %v, want tag-review (merge parks for tag confirm)", got.State)
+	}
+	if _, err := r.ConfirmTags(context.Background(), j.ID, tag.Metadata{
+		Title: got.Title, Author: got.Author,
+	}); err != nil {
+		t.Fatalf("confirm tags: %v", err)
+	}
 	for {
 		j, _ = st.Get(j.ID)
 		if j.State.Terminal() {
@@ -457,8 +478,7 @@ func TestVerifyPassAdvancesToMerging(t *testing.T) {
 	}
 }
 
-func TestVerifyFailureParksBackInConfirm(t *testing.T) {
-	g := &fakeGrabber{name: "slskd", kinds: source.P2P, states: []grab.State{
+func TestVerifyFailureParksBackInConfirm(t *testing.T) {	g := &fakeGrabber{name: "slskd", kinds: source.P2P, states: []grab.State{
 		{Phase: grab.Done, Progress: 1},
 	}}
 	// Two offers: the confirmed one fails verification, the other stays on
@@ -577,5 +597,56 @@ func TestUnreachableLibraryDoesNotBlockSearch(t *testing.T) {
 	got, _ := st.Get(j.ID)
 	if got.State != store.Confirm {
 		t.Fatalf("state = %v, want confirm (an unreachable ABS must not block)", got.State)
+	}
+}
+
+func TestMergeParksInTagReview(t *testing.T) {
+	g := &fakeGrabber{name: "slskd", kinds: source.P2P, states: []grab.State{
+		{Phase: grab.Done, Progress: 1},
+	}}
+	r, st := singleOfferRunner(t, g)
+	j := seedJob(t, st)
+
+	got := downloadToVerifying(t, r, st, j)
+	if got.State != store.Merging {
+		t.Fatalf("state = %v, want merging", got.State)
+	}
+	// One more advance runs the merge; the job parks in tag review with
+	// the merged path recorded, awaiting the user's edit+confirm.
+	if err := r.advance(context.Background(), got); err != nil {
+		t.Fatalf("advance merge: %v", err)
+	}
+	got, _ = st.Get(j.ID)
+	if got.State != store.TagReview {
+		t.Fatalf("state = %v, want tag-review", got.State)
+	}
+	if got.Phase == "" {
+		t.Error("phase empty, want the merged file path")
+	}
+	// Wrong-state confirm is refused.
+	if _, err := r.ConfirmTags(context.Background(), "nope", tag.Metadata{}); err == nil {
+		t.Error("ConfirmTags on missing job succeeded, want error")
+	}
+	// Edited values persist and advance to shelving; the next sweep
+	// shelves through the scripted shelver.
+	confirmed, err := r.ConfirmTags(context.Background(), j.ID, tag.Metadata{
+		Title: "The Black Prism", Author: "Brent Weeks",
+		Series: "Lightbringer", SeriesSequence: "1",
+	})
+	if err != nil {
+		t.Fatalf("confirm tags: %v", err)
+	}
+	if confirmed.State != store.Shelving {
+		t.Errorf("state = %v, want shelving after tag confirm", confirmed.State)
+	}
+	if confirmed.Series != "Lightbringer" || confirmed.SeriesSequence != "1" {
+		t.Errorf("reviewed values not persisted: %+v", confirmed)
+	}
+	if err := r.advance(context.Background(), confirmed); err != nil {
+		t.Fatalf("advance shelve: %v", err)
+	}
+	got, _ = st.Get(j.ID)
+	if got.State != store.Done {
+		t.Errorf("state = %v, want done", got.State)
 	}
 }

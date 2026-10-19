@@ -119,6 +119,12 @@ type Work struct {
 type Release struct {
 	// Identifier is this edition's catalogue key.
 	Identifier metadata.Identifier
+	// Series and SeriesSequence ride the release so the request form can
+	// submit a complete job: the work carries them for display, the release
+	// carries them for acquisition.
+	Series string
+	// SeriesSequence is the position within Series.
+	SeriesSequence string
 	// Narrator distinguishes editions of the same work: "GraphicAudio" for a
 	// dramatisation, the reader's name otherwise.
 	Narrator string
@@ -126,6 +132,11 @@ type Release struct {
 	Publisher string
 	// PublishedYear is a bare YYYY.
 	PublishedYear string
+	// Description is the publisher's blurb. It rides to the tagger so the
+	// library contract's description field is populated.
+	Description string
+	// Genres are flattened genre names for the tagger.
+	Genres []string
 	// Source is the provider that produced this release.
 	Source string
 	// Parts is how many parts the release ships in. 1 for a single file.
@@ -162,12 +173,16 @@ func merge(works []*Work, books []*metadata.Book) []*Work {
 				continue
 			}
 			w.Releases = append(w.Releases, &Release{
-				Identifier:    id,
-				Narrator:      b.Narrator,
-				Publisher:     b.Publisher,
-				PublishedYear: b.PublishedYear,
-				Source:        b.Source,
-				Parts:         1,
+				Identifier:     id,
+				Series:         b.Series,
+				SeriesSequence: b.SeriesSequence,
+				Narrator:       b.Narrator,
+				Publisher:      b.Publisher,
+				PublishedYear:  b.PublishedYear,
+				Description:    b.Description,
+				Genres:         b.Genres,
+				Source:         b.Source,
+				Parts:          1,
 			})
 		}
 	}

@@ -8,17 +8,11 @@ package source
 
 import (
 	"context"
-	"time"
 
 	"github.com/Ebonhawk3829/rhapsode/internal/metadata"
 )
 
 // Source is one place copies of a release can be obtained.
-//
-// Implementations must be safe for concurrent use, and must respect their own
-// Policy: the anti-ban design assumes every external surface will rate-limit
-// or challenge, so throttling belongs inside the implementation rather than in
-// the caller.
 type Source interface {
 	// Name identifies the source in logs, in the UI, and on a Candidate. It
 	// is stable and lowercase, e.g. "audiobookbay".
@@ -29,10 +23,6 @@ type Source interface {
 	// slskd. The caller routes on this value and never on the source's name.
 	Kind() Kind
 
-	// Policy is the rate limit, concurrency and backoff this source wants
-	// applied to it.
-	Policy() Policy
-
 	// Search returns candidates for a release, best first.
 	//
 	// The release may carry no metadata at all: a free-text query that
@@ -41,11 +31,13 @@ type Source interface {
 	Search(ctx context.Context, release Release) ([]Candidate, error)
 
 	// Grab hands one candidate to the downloader and returns a handle the
-	// Grabber can track.
+	// Grabber can track. slug is the job's staging directory name: the
+	// source enqueues under audiobooks/<slug> so downloads land where the
+	// rest of the pipeline (and the orphan cleanup) expects them.
 	//
 	// Grab does not download. It enqueues, and returns as soon as the
 	// downloader has accepted the job.
-	Grab(ctx context.Context, c Candidate) (Handle, error)
+	Grab(ctx context.Context, c Candidate, slug string) (Handle, error)
 }
 
 // Kind is the transport a source's handles use.
@@ -60,27 +52,6 @@ const (
 	// uses it; it exists so the routing switch is total.
 	Direct Kind = "direct"
 )
-
-// Policy is how hard a source may be pushed.
-//
-// The zero value is not usable: a source that does not set a rate limit will
-// be hammered until it bans the client. Every implementation must return a
-// Policy with Rate set.
-type Policy struct {
-	// Rate is the minimum interval between requests to this source.
-	Rate time.Duration
-	// Burst is how many requests may be made back-to-back before Rate
-	// applies.
-	Burst int
-	// Concurrency caps in-flight requests to this source.
-	Concurrency int
-	// Backoff is the base delay for exponential retry after a 429, a 403, or
-	// a challenge page.
-	Backoff time.Duration
-	// Cooldown is how long to stop asking after repeated failures, before
-	// probing again.
-	Cooldown time.Duration
-}
 
 // Release is the thing being acquired: a specific edition of a work.
 //
@@ -144,6 +115,11 @@ type Candidate struct {
 	// RemoteDir is the peer-side directory the files live in, when the
 	// source recorded one separately from the filenames.
 	RemoteDir string
+	// ExternalURL links out to the offer's own page (e.g. the ABB listing).
+	// Empty when the source has no per-offer page. Display only: the
+	// confirm card renders it as a "view listing" link so the user can
+	// read what the scraper could not extract.
+	ExternalURL string
 	// Handle is what the Grabber needs to start the transfer.
 	Handle Handle
 }
