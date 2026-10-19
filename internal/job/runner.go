@@ -801,14 +801,12 @@ func (r *Runner) poll(ctx context.Context, j *store.Job) error {
 	return nil
 }
 
-// verifyStaged locates the completed files through the transport's API and
-// inspects their tags against the release.
+// verifyStaged inspects the staged files' tags against the release.
 //
-// A failed verification parks the job back in confirm with the offending
-// candidate rejected and the reason recorded (docs/design.md): the user
-// re-engages on the confirm screen instead of re-running a search, so a
-// wrong grab costs one download, not the whole request. A nil verifier
-// leaves the job parked in verifying — never silently passed.
+// Verify advises, it never gates: mismatches persist as warnings for the
+// tag-review screen, and every inspected batch proceeds to merging.
+// Structural failures (no files, unreadable dumps, empty archives) are the
+// only exits that fail or park.
 func (r *Runner) verifyStaged(ctx context.Context, j *store.Job) error {
 	if r.verifier == nil {
 		return nil
@@ -881,11 +879,15 @@ func (r *Runner) verifyStaged(ctx context.Context, j *store.Job) error {
 // mergeStaged combines the verified batch into the one .m4b and parks the
 // job in tag review: the user edits the proposed tags and confirms before
 // anything is written.
+//
+// Paths resolve locally first: rescue-path jobs carry no GrabID, and
+// transfer records expire (slskd retention) while the bytes remain. The
+// transport API is the fallback for live transfers, not the primary.
 func (r *Runner) mergeStaged(ctx context.Context, j *store.Job) error {
 	if r.merger == nil {
 		return nil // not wired in this deployment shape; park
 	}
-	paths, err := r.stagedPaths(ctx, j)
+	paths, err := r.mergePaths(ctx, j)
 	if err != nil {
 		return err
 	}
@@ -1057,9 +1059,27 @@ func (r *Runner) localSelection(j *store.Job, files []store.CandidateFile) []str
 	return paths
 }
 
+// mergePaths resolves the files to merge: the confirmed selection against
+// the slug dir first (bytes on disk are ground truth), the transport API
+// second (live transfers whose batch record still exists). Verify used the
+// same files to inspect, so merge and verify can never disagree.
+func (r *Runner) mergePaths(ctx context.Context, j *store.Job) ([]string, error) {
+	c, err := r.st.CandidateByID(j.ID, j.ConfirmedCandidateID)
+	if err == nil {
+		files := c.SelectedFiles
+		if len(files) == 0 {
+			files = c.Files
+		}
+		if paths := r.localSelection(j, files); paths != nil {
+			return paths, nil
+		}
+	}
+	return r.stagedPaths(ctx, j)
+}
+
 // stagedPaths locates the completed files through the transport's API — the
-// same resolution the verify step uses, so merge and verify can never
-// disagree about what was downloaded.
+// fallback when the confirmed selection is not on disk (live transfer, or
+// a rescue that moved bytes after confirming).
 func (r *Runner) stagedPaths(ctx context.Context, j *store.Job) ([]string, error) {
 	g, ok := r.grabbers[r.grabKindOf(j)]
 	if !ok {
