@@ -195,6 +195,116 @@ func (r *Runner) sweepOrphans() {
 	}
 }
 
+// Orphans scans the downloads tree for directories no live job holds.
+// Crash debris and manually-copied files both surface here; the caller
+// decides which are rescues and which are rubbish.
+func (r *Runner) Orphans() ([]store.Orphan, error) {
+	if r.downloads == "" {
+		return nil, nil
+	}
+	root := filepath.Join(r.downloads, "audiobooks")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	jobs, err := r.st.List("")
+	if err != nil {
+		return nil, err
+	}
+	live := map[string]bool{}
+	for _, j := range jobs {
+		if !j.State.Terminal() {
+			live[j.Slug] = true
+		}
+	}
+	var out []store.Orphan
+	for _, e := range entries {
+		if !e.IsDir() || live[e.Name()] {
+			continue
+		}
+		dir := filepath.Join(root, e.Name())
+		o := store.Orphan{Slug: e.Name()}
+		for _, f := range listAudio(dir) {
+			info, err := os.Stat(f)
+			if err != nil {
+				continue
+			}
+			o.Files = append(o.Files, filepath.Base(f))
+			o.SizeBytes += info.Size()
+		}
+		if len(o.Files) > 0 {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}
+
+// ClaimOrphan attaches an orphan directory's audio files to a job in
+// confirm, jumping it straight to verifying. The orphan dir's files become
+// the confirmed selection of a synthetic candidate owned by the rescue, so
+// the audit trail shows where the bytes came from. The directory itself is
+// left in place until the job's normal cleanup removes it.
+func (r *Runner) ClaimOrphan(ctx context.Context, jobID, slug string) (*store.Job, error) {
+	_ = ctx
+	j, err := r.st.Get(jobID)
+	if err != nil {
+		return nil, err
+	}
+	if j.State != store.Confirm {
+		return nil, fmt.Errorf("job %s is in state %q, not confirm", shortID(j.ID), j.State)
+	}
+	dir := filepath.Join(r.downloads, "audiobooks", slug)
+	audio := listAudio(dir)
+	if len(audio) == 0 {
+		return nil, fmt.Errorf("no audio files in %s", slug)
+	}
+	files := make([]store.CandidateFile, 0, len(audio))
+	for _, f := range audio {
+		info, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		files = append(files, store.CandidateFile{Name: filepath.Base(f), Size: info.Size()})
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no audio files in %s", slug)
+	}
+	c := &store.Candidate{
+		JobID:  j.ID,
+		Source: "rescue",
+		Kind:   string(source.P2P),
+		Title:  "rescued from " + slug,
+		Files:  files,
+		Score:  0,
+		Band:   "review",
+		Reasons: []string{
+			"· rescued from orphan dir " + slug,
+			"· verify judges the files, not the provenance",
+		},
+	}
+	if err := r.st.SaveCandidate(c); err != nil {
+		return nil, err
+	}
+	if err := r.st.ConfirmCandidate(j.ID, c.ID, files); err != nil {
+		return nil, err
+	}
+	j.State = store.Verifying
+	j.Source = "rescue"
+	j.ConfirmedCandidateID = c.ID
+	j.GrabID = ""
+	j.Phase = ""
+	j.Progress = 0
+	j.Error = ""
+	if err := r.st.Update(j); err != nil {
+		return nil, err
+	}
+	_ = r.st.AddEvent(j.ID, "grab", fmt.Sprintf("claimed orphan %s (%d files); verifying", slug, len(files)))
+	return r.st.Get(jobID)
+}
+
 // sweep advances every job that needs advancing.
 func (r *Runner) sweep(ctx context.Context) error {
 	jobs, err := r.st.List("")
@@ -327,12 +437,20 @@ func (r *Runner) search(ctx context.Context, j *store.Job) error {
 	return r.st.AddEvent(j.ID, "search", fmt.Sprintf("%d offers found; awaiting file selection", nFound))
 }
 
-// Confirm hands the user's file selection to the download pipeline.
+// Download hands the user's file selection to the download pipeline.
 //
-// It is the resume action for a job in confirm: the chosen candidate is
-// marked, the selection enqueue happens through the candidate's recorded
-// files, and the job proceeds to downloading. An empty selection means
-// "take everything the offer showed", which is the usual case.
+// It is the resume action for a job awaiting file selection: the chosen
+// candidate is marked, the selection enqueue happens through the
+// candidate's recorded files, and the job proceeds to downloading. An empty
+// selection means "take everything the offer showed", which is the usual
+// case.
+//
+// When the selected files are already on disk under the job's slug dir
+// (a re-check after a failed verify, a restart that lost the transfer
+// record), the transfer is skipped and the job jumps straight to verifying.
+// The UI names this with the candidate's own wording — "Download" when
+// bytes are missing, "Re-check files" when they are present — but it is one
+// action: prefer what exists, fetch what does not.
 func (r *Runner) Confirm(ctx context.Context, jobID, candidateID string, selected []store.CandidateFile) (*store.Job, error) {
 	j, err := r.st.Get(jobID)
 	if err != nil {
@@ -360,6 +478,27 @@ func (r *Runner) Confirm(ctx context.Context, jobID, candidateID string, selecte
 
 	if err := r.st.ConfirmCandidate(jobID, candidateID, files); err != nil {
 		return nil, err
+	}
+
+	// Prefer what exists: when every selected file is already on disk
+	// under the slug dir, skip the transfer and go straight to verifying.
+	// This is the rescue path — a verify verdict the user overrode, a
+	// restart that lost the transfer record — and it must never silently
+	// re-download bytes the user already has.
+	if paths := r.localSelection(j, files); paths != nil {
+		j.State = store.Verifying
+		j.Source = c.Source
+		j.ConfirmedCandidateID = candidateID
+		j.GrabID = ""
+		j.Phase = ""
+		j.Progress = 0
+		j.Error = ""
+		if err := r.st.Update(j); err != nil {
+			return nil, err
+		}
+		_ = r.st.AddEvent(j.ID, "grab", fmt.Sprintf(
+			"%d files already on disk; verifying without re-download", len(paths)))
+		return r.st.Get(jobID)
 	}
 
 	// The transport a candidate travels on is persisted on the row, so the
@@ -567,6 +706,15 @@ func (r *Runner) SourceNames() []string {
 	return names
 }
 
+// OnDisk reports whether every named file exists under the job's slug dir.
+func (r *Runner) OnDisk(jobID string, files []store.CandidateFile) bool {
+	j, err := r.st.Get(jobID)
+	if err != nil {
+		return false
+	}
+	return r.localSelection(j, files) != nil
+}
+
 // poll checks the downloader and hands a completed transfer to verify.
 //
 // Completing the download means staging is complete — not that the copy is
@@ -623,19 +771,39 @@ func (r *Runner) verifyStaged(ctx context.Context, j *store.Job) error {
 	if r.verifier == nil {
 		return nil
 	}
-	g, ok := r.grabbers[r.grabKindOf(j)]
-	if !ok {
-		return r.fail(j, fmt.Sprintf("grabber %q vanished mid-job", j.Grabber))
-	}
-	paths, err := g.Located(ctx, grab.ID(j.GrabID))
-	if err != nil {
-		return fmt.Errorf("locate staged files: %w", err)
+	var paths []string
+	if j.GrabID == "" {
+		// No transfer record: the rescue path put the job here straight
+		// from confirm, so resolve the confirmed selection locally.
+		c, err := r.st.CandidateByID(j.ID, j.ConfirmedCandidateID)
+		if err != nil {
+			return fmt.Errorf("locate staged files: %w", err)
+		}
+		files := c.SelectedFiles
+		if len(files) == 0 {
+			files = c.Files
+		}
+		paths = r.localSelection(j, files)
+		if paths == nil {
+			return r.fail(j, "local files missing for re-verify")
+		}
+	} else {
+		g, ok := r.grabbers[r.grabKindOf(j)]
+		if !ok {
+			return r.fail(j, fmt.Sprintf("grabber %q vanished mid-job", j.Grabber))
+		}
+		var err error
+		paths, err = g.Located(ctx, grab.ID(j.GrabID))
+		if err != nil {
+			return fmt.Errorf("locate staged files: %w", err)
+		}
 	}
 
 	// Archives resolve here: a .zip holding the m4b extracts into the
 	// slug dir, and verify inspects the contents. Torrents commonly wrap
 	// the audio this way; grading the archive pre-grab was impossible,
 	// so the honest check happens on the extracted files.
+	var err error
 	paths, err = extractArchives(paths)
 	if err != nil {
 		return r.fail(j, "extract archives: "+err.Error())
@@ -802,6 +970,25 @@ func (r *Runner) shelveStaged(ctx context.Context, j *store.Job) error {
 	_ = r.st.AddEvent(j.ID, "done", "in the library")
 	r.notify(ctx, "Book shelved", j.Title+" is in the library")
 	return nil
+}
+
+// localSelection resolves the selected files against the slug dir,
+// returning their paths when every one exists locally, nil otherwise.
+// Basename matching is deliberate: the candidate records source-side paths
+// (peer folders, torrent members) while the slug dir holds what landed.
+func (r *Runner) localSelection(j *store.Job, files []store.CandidateFile) []string {
+	if r.downloads == "" || j.Slug == "" {
+		return nil
+	}
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		p := filepath.Join(r.downloads, "audiobooks", j.Slug, filepath.Base(f.Name))
+		if _, err := os.Stat(p); err != nil {
+			return nil
+		}
+		paths = append(paths, p)
+	}
+	return paths
 }
 
 // stagedPaths locates the completed files through the transport's API — the

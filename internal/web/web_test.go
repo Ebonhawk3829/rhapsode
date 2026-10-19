@@ -46,6 +46,11 @@ func (s *stubRequests) Unreject(string, string) (*store.Job, error) {
 func (s *stubRequests) RetryVerify(context.Context, string, string) (*store.Job, error) {
 	return &store.Job{ID: "job-1"}, nil
 }
+func (s *stubRequests) Orphans() ([]store.Orphan, error) { return nil, nil }
+func (s *stubRequests) ClaimOrphan(context.Context, string, string) (*store.Job, error) {
+	return &store.Job{ID: "job-1"}, nil
+}
+func (s *stubRequests) OnDisk(string, []store.CandidateFile) bool { return false }
 
 func newTestServer(t *testing.T) (*Server, *store.Store, *stubRequests) {
 	t.Helper()

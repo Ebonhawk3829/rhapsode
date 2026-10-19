@@ -222,7 +222,8 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
           {{end}}
         </ul>
         <div class="actions">
-          <button class="btn primary" type="submit" name="candidateId" value="{{.ID}}">Download these files</button>
+          {{if .OnDisk}}<button class="btn primary" type="submit" name="candidateId" value="{{.ID}}">Verify these files</button>
+          {{else}}<button class="btn primary" type="submit" name="candidateId" value="{{.ID}}">Download these files</button>{{end}}
       </form>
       <form method="post" action="/jobs/{{$.Job.ID}}/reject" class="inline">
         <button class="btn danger" type="submit" name="candidateId" value="{{.ID}}">Reject offer</button>
@@ -317,6 +318,10 @@ type candidateView struct {
 	RenderSize  string
 	Band        string
 	ExternalURL string
+	// OnDisk marks offers whose files are already under the slug dir: the
+	// button reads "Verify these files" instead of "Download these files",
+	// and the action skips the transfer. Same endpoint, honest label.
+	OnDisk bool
 	// IsTorrent marks magnet offers: no file list exists pre-grab, so the
 	// row renders without checkboxes and the detail path never shows as a
 	// "file". The path is transport plumbing, not a download location.
@@ -375,6 +380,7 @@ func (s *Server) handleJobPage(w http.ResponseWriter, r *http.Request) {
 				Band:        c.Band,
 				IsTorrent:   c.Kind == "torrent",
 				ExternalURL: c.ExternalURL,
+				OnDisk:      s.requests.OnDisk(job.ID, c.Files),
 				Reasons:     c.Reasons,
 				Files:       c.Files,
 			})
@@ -593,6 +599,47 @@ func (s *Server) handleRetryVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, err := s.requests.RetryVerify(r.Context(), jobID, body.CandidateID)
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+// handleClaimForm attaches an orphan dir to a job in confirm.
+func (s *Server) handleClaimForm(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	slug := r.PostFormValue("slug")
+	if slug == "" {
+		writeError(w, http.StatusBadRequest, errors.New("slug is required"))
+		return
+	}
+	if _, err := s.requests.ClaimOrphan(r.Context(), jobID, slug); err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	http.Redirect(w, r, "/jobs/"+jobID, http.StatusSeeOther)
+}
+
+// handleClaim is the JSON variant.
+func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	var body struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.Slug == "" {
+		writeError(w, http.StatusBadRequest, errors.New("slug is required"))
+		return
+	}
+	job, err := s.requests.ClaimOrphan(r.Context(), jobID, body.Slug)
 	if err != nil {
 		writeError(w, statusFor(err), err)
 		return

@@ -299,6 +299,29 @@ func (s *Server) handleJobsPage(w http.ResponseWriter, r *http.Request) {
 			b.WriteString(`</table>`)
 		}
 	}
+	// Rescue scan: download dirs no live job holds. Crash debris and
+	// manually-copied files both surface here — the parallel workflow for
+	// reconciling stray bytes with active jobs instead of re-downloading.
+	if orphans, err := s.requests.Orphans(); err == nil && len(orphans) > 0 {
+		b.WriteString(`<h2>Unclaimed downloads</h2>`)
+		b.WriteString(`<p class="sub">Files on disk with no job behind them. Attach one to a job awaiting files to verify it without re-downloading.</p>`)
+		for _, o := range orphans {
+			b.WriteString(`<div class="card"><div class="title">` + template.HTMLEscapeString(o.Slug) + `</div>`)
+			b.WriteString(`<div class="byline">` + renderSize(o.SizeBytes) + ` across ` + fmt.Sprintf("%d", len(o.Files)) + ` audio files</div>`)
+			b.WriteString(`<ul class="files">`)
+			for _, f := range o.Files {
+				b.WriteString(`<li><code>` + template.HTMLEscapeString(f) + `</code></li>`)
+			}
+			b.WriteString(`</ul><div class="actions">`)
+			for _, j := range jobs {
+				if j.State != store.Confirm {
+					continue
+				}
+				b.WriteString(`<form class="inline" method="post" action="/jobs/` + template.HTMLEscapeString(j.ID) + `/claim"><input type="hidden" name="slug" value="` + template.HTMLEscapeString(o.Slug) + `"><button class="btn" type="submit">Verify as ` + template.HTMLEscapeString(j.Title) + `</button></form>`)
+			}
+			b.WriteString(`</div></div>`)
+		}
+	}
 	b.WriteString(`</div></body></html>`)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

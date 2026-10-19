@@ -695,3 +695,68 @@ func TestRetryVerifyUsesLocalFiles(t *testing.T) {
 		t.Error("retry verify on missing candidate succeeded, want error")
 	}
 }
+
+func TestConfirmPrefersLocalFiles(t *testing.T) {
+	dir := t.TempDir()
+	g := &fakeGrabber{name: "slskd", kinds: source.P2P}
+	r, st := singleOfferRunner(t, g)
+	r.SetDownloads(dir)
+	j := seedJob(t, st)
+	if err := r.advance(context.Background(), j); err != nil {
+		t.Fatalf("advance search: %v", err)
+	}
+	cands, _ := st.Candidates(j.ID, 0)
+	c := cands[0]
+	audio := filepath.Join(dir, "audiobooks", j.Slug, filepath.Base(c.Files[0].Name))
+	if err := os.MkdirAll(filepath.Dir(audio), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(audio, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !r.OnDisk(j.ID, c.Files) {
+		t.Fatal("OnDisk false with files present")
+	}
+	got, err := r.Confirm(context.Background(), j.ID, c.ID, nil)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if got.State != store.Verifying {
+		t.Errorf("state = %v, want verifying (no re-download)", got.State)
+	}
+	if got.GrabID != "" {
+		t.Errorf("grab id = %q, want empty (no transfer enqueued)", got.GrabID)
+	}
+}
+
+func TestClaimOrphan(t *testing.T) {
+	dir := t.TempDir()
+	orphanDir := filepath.Join(dir, "audiobooks", "stray-book")
+	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanDir, "book.m4b"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &fakeGrabber{name: "slskd", kinds: source.P2P}
+	r, st := singleOfferRunner(t, g)
+	r.SetDownloads(dir)
+	j := seedJob(t, st)
+	if err := r.advance(context.Background(), j); err != nil {
+		t.Fatalf("advance search: %v", err)
+	}
+	orphans, err := r.Orphans()
+	if err != nil || len(orphans) != 1 {
+		t.Fatalf("orphans = %v, %v; want 1", orphans, err)
+	}
+	got, err := r.ClaimOrphan(context.Background(), j.ID, "stray-book")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if got.State != store.Verifying {
+		t.Errorf("state = %v, want verifying", got.State)
+	}
+	if got.Source != "rescue" {
+		t.Errorf("source = %q, want rescue", got.Source)
+	}
+}

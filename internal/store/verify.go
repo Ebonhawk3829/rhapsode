@@ -69,3 +69,15 @@ func (s *Store) Unreject(jobID, id string) error {
 	}
 	return nil
 }
+
+// Orphan is one unclaimed download directory: bytes on disk the pipeline
+// will never claim on its own. It lives in store (not job) so both the
+// runner and the web layer share the type without an import cycle.
+type Orphan struct {
+	// Slug is the directory name, usually a job slug from an earlier run.
+	Slug string
+	// Files are the audio members found inside, basenames only.
+	Files []string
+	// SizeBytes totals the audio members.
+	SizeBytes int64
+}

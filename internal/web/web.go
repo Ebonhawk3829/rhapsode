@@ -47,6 +47,14 @@ type RequestCreator interface {
 	Clear(jobID string) error
 	// SourceNames lists the configured source names for status display.
 	SourceNames() []string
+	// OnDisk reports whether every named file exists under the job's slug
+	// dir. The confirm screen labels offers honestly: verify when present,
+	// download when absent.
+	OnDisk(jobID string, files []store.CandidateFile) bool
+	// Orphans lists download directories no live job holds.
+	Orphans() ([]store.Orphan, error)
+	// ClaimOrphan attaches an orphan dir's audio to a job in confirm.
+	ClaimOrphan(ctx context.Context, jobID, slug string) (*store.Job, error)
 }
 
 // Server is the HTTP surface.
@@ -75,6 +83,7 @@ func New(cfg *config.File, st *store.Store, cat *catalog.Catalog, rc RequestCrea
 	mux.HandleFunc("POST /jobs/{id}/reject", s.handleRejectForm)
 	mux.HandleFunc("POST /jobs/{id}/unreject", s.handleUnrejectForm)
 	mux.HandleFunc("POST /jobs/{id}/retry-verify", s.handleRetryVerifyForm)
+	mux.HandleFunc("POST /jobs/{id}/claim", s.handleClaimForm)
 	mux.HandleFunc("POST /jobs/{id}/tags", s.handleTagsForm)
 	mux.HandleFunc("POST /jobs/{id}/cancel", s.handleCancelForm)
 	mux.HandleFunc("POST /jobs/{id}/clear", s.handleClearForm)
@@ -85,6 +94,7 @@ func New(cfg *config.File, st *store.Store, cat *catalog.Catalog, rc RequestCrea
 	mux.HandleFunc("POST /api/jobs/{id}/reject", s.handleRejectCandidate)
 	mux.HandleFunc("POST /api/jobs/{id}/unreject", s.handleUnrejectCandidate)
 	mux.HandleFunc("POST /api/jobs/{id}/retry-verify", s.handleRetryVerify)
+	mux.HandleFunc("POST /api/jobs/{id}/claim", s.handleClaim)
 	mux.HandleFunc("POST /api/jobs/{id}/tags", s.handleConfirmTags)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleClearJob)
