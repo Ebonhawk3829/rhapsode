@@ -151,3 +151,28 @@ func TestAudioPresence(t *testing.T) {
 		}
 	}
 }
+
+func TestArchiveNeutral(t *testing.T) {
+	rel := relGA()
+	arch := source.Candidate{
+		Title:  "The Way of Kings",
+		Format: "zip",
+		Files:  []source.File{{Name: "book/way-of-kings.zip", Size: 500000000}},
+		Handle: source.Handle{Kind: source.P2P},
+	}
+	r := Grade(rel, arch)
+	for _, reason := range r.Reasons {
+		if strings.Contains(reason, "no audio files") {
+			t.Errorf("archive flagged as companion-only: %v", r.Reasons)
+		}
+	}
+	found := false
+	for _, reason := range r.Reasons {
+		if strings.Contains(reason, "archives") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("archive not noted as uninspected: %v", r.Reasons)
+	}
+}

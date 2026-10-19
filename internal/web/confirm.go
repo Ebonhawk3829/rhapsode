@@ -129,6 +129,7 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{{if .AutoRefresh}}<meta http-equiv="refresh" content="10">{{end}}
 <title>{{.Job.Title}} — rhapsode</title>
 <style>` + sharedCSS + `</style>
 </head>
@@ -228,9 +229,14 @@ type jobView struct {
 	Job        *store.Job
 	Confirming bool
 	TagReview  bool
-	Sections   []*sourceSection
-	Grabber    string
-	GrabID     string
+	// AutoRefresh reloads the page every 10s on progress states
+	// (downloading, verifying, merging, tagging, shelving) where there is
+	// no form state to lose. Decision states (confirm, tag-review) never
+	// auto-reload: a refresh mid-edit would wipe checkbox and field input.
+	AutoRefresh bool
+	Sections    []*sourceSection
+	Grabber     string
+	GrabID      string
 }
 
 // sourceSection is one source's part of the confirm screen. The two sources
@@ -332,6 +338,10 @@ func (s *Server) handleJobPage(w http.ResponseWriter, r *http.Request) {
 		}
 	case store.TagReview:
 		v.TagReview = true
+	case store.Downloading, store.Verifying, store.Merging, store.Tagging, store.Shelving:
+		v.AutoRefresh = true
+		v.Grabber = job.Grabber
+		v.GrabID = job.GrabID
 	default:
 		v.Grabber = job.Grabber
 		v.GrabID = job.GrabID

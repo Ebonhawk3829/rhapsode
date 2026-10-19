@@ -131,12 +131,19 @@ func Grade(rel source.Release, c source.Candidate) Result {
 	// alongside real audio. Torrent offers carry no file list until grab
 	// time (their Files hold the detail path, not members), so they skip
 	// this check rather than failing it.
+	//
+	// Archives are unknown, not absent: a .zip may hold the whole m4b.
+	// They earn a neutral note and no penalty — grading the contents
+	// pre-grab is impossible, and punishing them hides real copies.
 	if len(c.Files) > 0 && !isTorrentPlaceholder(c) {
-		if hasAudio(c.Files) {
+		switch {
+		case hasAudio(c.Files):
 			gained += 0.5
 			possible += 0.5
 			pos = append(pos, "✓ audio files in share")
-		} else {
+		case hasArchive(c.Files):
+			pos = append(pos, "· contains archives (contents uninspected)")
+		default:
 			neg = append(neg, "✗ no audio files in share (companions only?)")
 			possible += 2.0
 		}
@@ -194,6 +201,23 @@ func hasAudio(files []source.File) bool {
 	for _, f := range files {
 		ext := strings.ToLower(strings.TrimPrefix(path.Ext(f.Name), "."))
 		if audioExts[ext] {
+			return true
+		}
+	}
+	return false
+}
+
+// archiveExts are containers that may hold audio: uninspectable pre-grab,
+// extracted post-download before verify runs.
+var archiveExts = map[string]bool{
+	"zip": true, "rar": true, "7z": true, "tar": true, "gz": true,
+}
+
+// hasArchive reports whether any file in the share is an archive.
+func hasArchive(files []source.File) bool {
+	for _, f := range files {
+		ext := strings.ToLower(strings.TrimPrefix(path.Ext(f.Name), "."))
+		if archiveExts[ext] {
 			return true
 		}
 	}

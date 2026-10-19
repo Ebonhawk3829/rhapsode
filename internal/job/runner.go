@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -276,6 +277,7 @@ func (r *Runner) search(ctx context.Context, j *store.Job) error {
 			_ = r.st.AddEvent(j.ID, "search", fmt.Sprintf("source %s failed: %v", s.Name(), err))
 			continue
 		}
+		_ = r.st.AddEvent(j.ID, "search", fmt.Sprintf("source %s returned %d responses", s.Name(), len(cands)))
 		for _, c := range cands {
 			res := score.Grade(rel, c)
 			if posted := candidatePosted(c); posted != "" {
@@ -551,6 +553,15 @@ func (r *Runner) verifyStaged(ctx context.Context, j *store.Job) error {
 		return fmt.Errorf("locate staged files: %w", err)
 	}
 
+	// Archives resolve here: a .zip holding the m4b extracts into the
+	// slug dir, and verify inspects the contents. Torrents commonly wrap
+	// the audio this way; grading the archive pre-grab was impossible,
+	// so the honest check happens on the extracted files.
+	paths, err = extractArchives(paths)
+	if err != nil {
+		return r.fail(j, "extract archives: "+err.Error())
+	}
+
 	report, err := r.verifier.Inspect(paths, verifyReleaseOf(j))
 	if err != nil {
 		return fmt.Errorf("verify: %w", err)
@@ -730,6 +741,78 @@ func (r *Runner) stagedPaths(ctx context.Context, j *store.Job) ([]string, error
 		return nil, fmt.Errorf("no staged files located for the merge")
 	}
 	return paths, nil
+}
+
+// extractArchives unpacks archive members found among the staged paths into
+// their containing directory, returning the audio files within. Non-archive
+// paths pass through untouched. Extraction shells to 7zz (in the image via
+// the 7zip package): it handles zip, rar, and 7z uniformly, which the stdlib
+// cannot. 7zz extracts flat into the slug dir, so traversal entries cannot
+// escape it. A member list with no audio inside is an error — verify cannot
+// judge an empty set, and failing here names the cause instead of parking
+// on it.
+func extractArchives(paths []string) ([]string, error) {
+	var out []string
+	for _, p := range paths {
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(p), "."))
+		if !archiveExts[ext] {
+			out = append(out, p)
+			continue
+		}
+		dir := filepath.Dir(p)
+		before := listAudio(dir)
+		cmd := exec.CommandContext(context.Background(), "7zz", "x", "-y", "-o"+dir, p)
+		if raw, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("extract %s: %v: %.300s", filepath.Base(p), err, raw)
+		}
+		seen := map[string]bool{}
+		for _, f := range before {
+			seen[f] = true
+		}
+		var found []string
+		for _, f := range listAudio(dir) {
+			if !seen[f] {
+				found = append(found, f)
+			}
+		}
+		if len(found) == 0 {
+			return nil, fmt.Errorf("%s holds no audio", filepath.Base(p))
+		}
+		out = append(out, found...)
+	}
+	return out, nil
+}
+
+// listAudio returns the audio files directly inside dir (no recursion: the
+// slug dir is flat by construction, and archives extract into it).
+func listAudio(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
+		if audioExts[ext] {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	return out
+}
+
+// audioExts mirrors the scorer's listenable set: extraction keeps what
+// verify can judge.
+var audioExts = map[string]bool{
+	"m4b": true, "m4a": true, "mp3": true, "flac": true,
+	"m4p": true, "ogg": true, "oga": true, "opus": true,
+	"wma": true, "wav": true, "aiff": true, "aif": true,
+}
+
+var archiveExts = map[string]bool{
+	"zip": true, "rar": true, "7z": true, "tar": true, "gz": true,
 }
 
 // notify pushes one message; failures are logged, never fatal.

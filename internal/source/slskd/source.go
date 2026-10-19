@@ -40,12 +40,38 @@ func (s *Source) Kind() source.Kind { return source.P2P }
 // The query is built from whatever the release carries. A release with no
 // metadata at all — a free-text query that matched no catalogue — still
 // searches, using the raw query text.
+//
+// When author+title returns thin results, a title-only pass follows: peers
+// name shares after the book, and the author term can exclude shares whose
+// folder text omits it. The scorer re-grades everything, so the loose pass
+// costs noise, not wrong picks. Dedupe happens in the store by
+// (job, source, user, dir).
 func (s *Source) Search(ctx context.Context, rel source.Release) ([]source.Candidate, error) {
 	query := searchQuery(rel)
 	if query == "" {
 		return nil, errors.New("slskd: nothing to search for")
 	}
 
+	first, err := s.runQuery(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	// Thin first pass and a title to fall back to: ask loose. The
+	// threshold is small on purpose — a healthy author+title query returns
+	// dozens, and a second 15s search that adds nothing is pure latency.
+	if len(first) < 5 && rel.Title != "" && searchQuery(source.Release{Title: rel.Title}) != query {
+		loose, err := s.runQuery(ctx, rel.Title)
+		if err != nil {
+			// The strict pass stands; the loose one was a bonus.
+			return first, nil
+		}
+		return dedupe(first, loose), nil
+	}
+	return first, nil
+}
+
+// runQuery executes one Soulseek search and returns its candidates.
+func (s *Source) runQuery(ctx context.Context, query string) ([]source.Candidate, error) {
 	id, err := s.client.startSearch(ctx, query, int(searchTimeout.Milliseconds()))
 	if err != nil {
 		return nil, err
@@ -62,6 +88,30 @@ func (s *Source) Search(ctx context.Context, rel source.Release) ([]source.Candi
 		return nil, err
 	}
 	return s.candidates(responses), nil
+}
+
+// dedupe merges two candidate lists by (user, dir): the same peer offering
+// the same share in both passes appears once. The strict pass orders first.
+func dedupe(strict, loose []source.Candidate) []source.Candidate {
+	seen := map[string]bool{}
+	out := make([]source.Candidate, 0, len(strict)+len(loose))
+	for _, c := range append(strict, loose...) {
+		key := string(c.Handle.Kind) + "\x00" + candidateUser(c) + "\x00" + c.RemoteDir
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, c)
+	}
+	return out
+}
+
+// candidateUser reads the peer out of a live candidate's handle.
+func candidateUser(c source.Candidate) string {
+	if ref, ok := c.Handle.Ref.(p2pRef); ok {
+		return ref.Username
+	}
+	return ""
 }
 
 // wait polls until the search completes or the context ends.

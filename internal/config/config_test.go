@@ -71,7 +71,8 @@ func TestPresenceGating(t *testing.T) {
 	}
 }
 
-func TestExplicitBlankProviderStaysOff(t *testing.T) {	body := minimal() + "\nproviders:\n  graphicaudio:\n    url: \"\"\n  audnexus:\n    url: \"\"\n  audible:\n    base: \"\"\n"
+func TestExplicitBlankProviderStaysOff(t *testing.T) {
+	body := minimal() + "\nproviders:\n  graphicaudio:\n    url: \"\"\n  audnexus:\n    url: \"\"\n  audible:\n    base: \"\"\n"
 	f, err := Load(writeCfg(t, body))
 	if err != nil {
 		t.Fatalf("load: %v", err)

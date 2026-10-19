@@ -35,8 +35,8 @@ FROM sandreas/m4b-tool@${M4B_TOOL_DIGEST}
 
 # curl is not in the base image (only the php83-curl extension), and the
 # healthcheck needs a client. ca-certificates is added for the outbound HTTPS
-# to Audnexus.
-RUN apk add --no-cache curl ca-certificates
+# to Audnexus. 7zip extracts torrent-wrapped archives before verify runs.
+RUN apk add --no-cache curl ca-certificates 7zip
 
 COPY --from=build /out/rhapsode /usr/local/bin/rhapsode
 

@@ -344,3 +344,19 @@ func TestLocalPathTranslation(t *testing.T) {
 		t.Errorf("localPath = %q, want /downloads/audiobooks/x/file.m4b", got)
 	}
 }
+
+func TestDedupe(t *testing.T) {
+	mk := func(user, dir string) source.Candidate {
+		return source.Candidate{
+			RemoteDir: dir,
+			Handle:    source.Handle{Kind: source.P2P, Ref: p2pRef{Username: user}},
+		}
+	}
+	got := dedupe(
+		[]source.Candidate{mk("a", "d1")},
+		[]source.Candidate{mk("a", "d1"), mk("b", "d2")},
+	)
+	if len(got) != 2 {
+		t.Fatalf("dedupe = %d, want 2 (same peer+dir collapses)", len(got))
+	}
+}
