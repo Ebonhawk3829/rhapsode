@@ -43,6 +43,9 @@ func (s *stubRequests) SourceNames() []string { return []string{"slskd", "audiob
 func (s *stubRequests) Unreject(string, string) (*store.Job, error) {
 	return &store.Job{ID: "job-1"}, nil
 }
+func (s *stubRequests) RetryVerify(context.Context, string, string) (*store.Job, error) {
+	return &store.Job{ID: "job-1"}, nil
+}
 
 func newTestServer(t *testing.T) (*Server, *store.Store, *stubRequests) {
 	t.Helper()

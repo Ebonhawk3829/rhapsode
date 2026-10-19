@@ -36,6 +36,9 @@ type RequestCreator interface {
 	// again: the deliberate override for a verify verdict the user
 	// disagrees with.
 	Unreject(jobID, candidateID string) (*store.Job, error)
+	// RetryVerify re-runs verification against files already on disk,
+	// without re-downloading. Errors when any file is absent.
+	RetryVerify(ctx context.Context, jobID, candidateID string) (*store.Job, error)
 	// ConfirmTags applies the user's reviewed tags and advances to shelving.
 	ConfirmTags(ctx context.Context, jobID string, m tag.Metadata) (*store.Job, error)
 	// Cancel abandons a job.
@@ -71,6 +74,7 @@ func New(cfg *config.File, st *store.Store, cat *catalog.Catalog, rc RequestCrea
 	mux.HandleFunc("POST /jobs/{id}/confirm", s.handleConfirmForm)
 	mux.HandleFunc("POST /jobs/{id}/reject", s.handleRejectForm)
 	mux.HandleFunc("POST /jobs/{id}/unreject", s.handleUnrejectForm)
+	mux.HandleFunc("POST /jobs/{id}/retry-verify", s.handleRetryVerifyForm)
 	mux.HandleFunc("POST /jobs/{id}/tags", s.handleTagsForm)
 	mux.HandleFunc("POST /jobs/{id}/cancel", s.handleCancelForm)
 	mux.HandleFunc("POST /jobs/{id}/clear", s.handleClearForm)
@@ -80,6 +84,7 @@ func New(cfg *config.File, st *store.Store, cat *catalog.Catalog, rc RequestCrea
 	mux.HandleFunc("POST /api/jobs/{id}/confirm", s.handleConfirmJob)
 	mux.HandleFunc("POST /api/jobs/{id}/reject", s.handleRejectCandidate)
 	mux.HandleFunc("POST /api/jobs/{id}/unreject", s.handleUnrejectCandidate)
+	mux.HandleFunc("POST /api/jobs/{id}/retry-verify", s.handleRetryVerify)
 	mux.HandleFunc("POST /api/jobs/{id}/tags", s.handleConfirmTags)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleClearJob)

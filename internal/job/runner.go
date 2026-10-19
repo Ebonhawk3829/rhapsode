@@ -465,6 +465,55 @@ func (r *Runner) Unreject(jobID, candidateID string) (*store.Job, error) {
 	return r.st.Get(jobID)
 }
 
+// RetryVerify re-runs verification against files already on disk, without
+// re-downloading. The restored candidate's selected files resolve under the
+// job's slug dir; when every one exists locally, the job jumps straight to
+// verifying instead of enqueueing a fresh transfer. When any file is
+// missing (cleaned up, moved, never landed), it errors naming the absence
+// rather than downloading silently — the user then confirms normally.
+func (r *Runner) RetryVerify(ctx context.Context, jobID, candidateID string) (*store.Job, error) {
+	j, err := r.st.Get(jobID)
+	if err != nil {
+		return nil, err
+	}
+	if j.State != store.Confirm {
+		return nil, fmt.Errorf("job %s is in state %q, not confirm", shortID(j.ID), j.State)
+	}
+	c, err := r.st.CandidateByID(jobID, candidateID)
+	if err != nil {
+		return nil, err
+	}
+	files := c.SelectedFiles
+	if len(files) == 0 {
+		files = c.Files
+	}
+	if len(files) == 0 {
+		return nil, errors.New("candidate has no files to verify")
+	}
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		p := filepath.Join(r.downloads, "audiobooks", j.Slug, filepath.Base(f.Name))
+		if _, err := os.Stat(p); err != nil {
+			return nil, fmt.Errorf("file %s is not on disk; confirm the offer to download it", filepath.Base(f.Name))
+		}
+		paths = append(paths, p)
+	}
+	if err := r.st.Unreject(jobID, candidateID); err != nil {
+		return nil, err
+	}
+	if err := r.st.ConfirmCandidate(jobID, candidateID, files); err != nil {
+		return nil, err
+	}
+	j.State = store.Verifying
+	j.ConfirmedCandidateID = candidateID
+	j.Error = ""
+	if err := r.st.Update(j); err != nil {
+		return nil, err
+	}
+	_ = r.st.AddEvent(j.ID, "verify", fmt.Sprintf("re-verifying %d local files (no re-download)", len(paths)))
+	return r.st.Get(jobID)
+}
+
 // Cancel stops a job at the user's word. It is a decision, not an error:
 // the audit records it as such. An in-flight transfer is stopped and its
 // partial files deleted; a cancel failure is logged, never fatal — the
@@ -857,7 +906,10 @@ func (r *Runner) notify(ctx context.Context, title, message string) {
 
 // parkBackInConfirm reopens the confirm screen after a failed verification:
 // the confirmed candidate is rejected with the verdict recorded, and the job
-// returns to confirm where the remaining offers await the user.
+// returns to confirm where the remaining offers await the user. The stale
+// error banner is cleared: the verdict lives on the rejected row, and a
+// banner repeating it above the live offers reads as if the job itself is
+// broken rather than one offer having been ruled out.
 func (r *Runner) parkBackInConfirm(j *store.Job, reason string) error {
 	if j.ConfirmedCandidateID != "" {
 		if err := r.st.RejectConfirmedCandidate(j.ID, j.ConfirmedCandidateID); err != nil {
@@ -869,7 +921,7 @@ func (r *Runner) parkBackInConfirm(j *store.Job, reason string) error {
 	j.GrabID = ""
 	j.Phase = ""
 	j.Progress = 0
-	j.Error = reason
+	j.Error = ""
 	if err := r.st.Update(j); err != nil {
 		return err
 	}
@@ -878,9 +930,12 @@ func (r *Runner) parkBackInConfirm(j *store.Job, reason string) error {
 		return err
 	}
 	if left == 0 {
+		// The verdict still matters when nothing remains: the job fails
+		// with the reason so the failure names the cause, but the banner
+		// only shows on terminal states — confirm screens stay clean.
 		return r.fail(j, reason+"; no candidates remain")
 	}
-	return r.st.AddEvent(j.ID, "verify", fmt.Sprintf("candidate rejected; %d offers remain on the confirm screen", left))
+	return r.st.AddEvent(j.ID, "verify", fmt.Sprintf("candidate rejected (%s); %d offers remain on the confirm screen", reason, left))
 }
 
 // verifyReleaseOf maps the stored job onto the verify contract.

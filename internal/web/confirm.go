@@ -235,7 +235,7 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
     {{end}}
     {{if .Rejected}}
     <h2>Rejected</h2>
-    <p class="sub">Offers already ruled out — including verify verdicts. Restore one to confirm it again.</p>
+    <p class="sub">Offers already ruled out — including verify verdicts. Re-check one against the files on disk, or restore it to the live list.</p>
     {{range .Rejected}}
     <section class="card" aria-label="rejected offer from {{if .Username}}{{.Username}}{{else}}unknown share{{end}}">
       <div class="title">{{if .Username}}{{.Username}}{{else}}unknown share{{end}} <span class="pill">{{.Band}}</span></div>
@@ -243,11 +243,14 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
       <ul class="reasons">
         {{range .Reasons}}<li class="{{if (startsWith . "✓")}}hit{{else if (startsWith . "✗")}}miss{{else}}note{{end}}">{{.}}</li>{{end}}
       </ul>
-      <form method="post" action="/jobs/{{$.Job.ID}}/unreject">
-        <div class="actions">
-          <button class="btn" type="submit" name="candidateId" value="{{.ID}}">Restore and retry</button>
-        </div>
+      <div class="actions">
+      <form method="post" action="/jobs/{{$.Job.ID}}/retry-verify" class="inline">
+        <button class="btn primary" type="submit" name="candidateId" value="{{.ID}}">Re-check files</button>
       </form>
+      <form method="post" action="/jobs/{{$.Job.ID}}/unreject" class="inline">
+        <button class="btn" type="submit" name="candidateId" value="{{.ID}}">Restore to list</button>
+      </form>
+      </div>
     </section>
     {{end}}
     {{end}}
@@ -554,6 +557,47 @@ func (s *Server) handleUnrejectForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/jobs/"+jobID, http.StatusSeeOther)
+}
+
+// handleRetryVerifyForm re-runs verification against local files.
+func (s *Server) handleRetryVerifyForm(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	candidateID := r.PostFormValue("candidateId")
+	if candidateID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("candidateId is required"))
+		return
+	}
+	if _, err := s.requests.RetryVerify(r.Context(), jobID, candidateID); err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	http.Redirect(w, r, "/jobs/"+jobID, http.StatusSeeOther)
+}
+
+// handleRetryVerify is the JSON variant.
+func (s *Server) handleRetryVerify(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	var body struct {
+		CandidateID string `json:"candidateId"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.CandidateID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("candidateId is required"))
+		return
+	}
+	job, err := s.requests.RetryVerify(r.Context(), jobID, body.CandidateID)
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
 }
 
 // handleCancelForm accepts the job page's cancel button.

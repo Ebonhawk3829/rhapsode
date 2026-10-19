@@ -506,8 +506,10 @@ func TestVerifyFailureParksBackInConfirm(t *testing.T) {
 	if got.State != store.Confirm {
 		t.Fatalf("state = %v, want confirm (failed verify reopens the decision)", got.State)
 	}
-	if got.Error == "" || !strings.Contains(got.Error, "verification failed") {
-		t.Errorf("error = %q, want the verify verdict", got.Error)
+	// The stale banner is cleared: the verdict lives on the rejected row
+	// and in the audit trail, not repeated above the live offers.
+	if got.Error != "" {
+		t.Errorf("error = %q, want empty (verdict is on the rejected row)", got.Error)
 	}
 	// The confirmed candidate carries the verify verdict: rejected_at is
 	// stamped, while the confirmation stamp stays as the historical record
@@ -649,5 +651,47 @@ func TestMergeParksInTagReview(t *testing.T) {
 	got, _ = st.Get(j.ID)
 	if got.State != store.Done {
 		t.Errorf("state = %v, want done", got.State)
+	}
+}
+
+func TestRetryVerifyUsesLocalFiles(t *testing.T) {
+	dir := t.TempDir()
+	g := &fakeGrabber{name: "slskd", kinds: source.P2P}
+	r, st := singleOfferRunner(t, g)
+	r.SetDownloads(dir)
+	j := seedJob(t, st)
+	// Seed the search so a candidate with a real filename exists.
+	if err := r.advance(context.Background(), j); err != nil {
+		t.Fatalf("advance search: %v", err)
+	}
+	got0, _ := st.Get(j.ID)
+	if got0.State != store.Confirm {
+		t.Fatalf("state = %v, want confirm", got0.State)
+	}
+	cands, _ := st.Candidates(j.ID, 0)
+	c := cands[0]
+	audio := filepath.Join(dir, "audiobooks", j.Slug, filepath.Base(c.Files[0].Name))
+	if err := os.MkdirAll(filepath.Dir(audio), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(audio, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ConfirmCandidate(j.ID, c.ID, c.Files); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RejectConfirmedCandidate(j.ID, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.RetryVerify(context.Background(), j.ID, c.ID)
+	if err != nil {
+		t.Fatalf("retry verify: %v", err)
+	}
+	if got.State != store.Verifying {
+		t.Errorf("state = %v, want verifying (no re-download)", got.State)
+	}
+	// Missing files error instead of downloading silently.
+	if _, err := r.RetryVerify(context.Background(), j.ID, "missing"); err == nil {
+		t.Error("retry verify on missing candidate succeeded, want error")
 	}
 }
