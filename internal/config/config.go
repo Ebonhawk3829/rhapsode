@@ -176,11 +176,17 @@ type Ntfy struct {
 //
 // Unknown keys are an error rather than a silent no-op: a misspelled key that
 // is quietly ignored is a setting the user believes is in force and is not.
+//
+// Values support ${VAR} and $VAR expansion from the environment (compose
+// injects secrets this way via the decrypted .env). A missing variable
+// expands to empty, which presence-gating reads as off — so an unset secret
+// disables its piece with a degraded notice rather than failing to start.
 func Load(path string) (*File, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	raw = []byte(os.ExpandEnv(string(raw)))
 
 	var f File
 	dec := yaml.NewDecoder(bytes.NewReader(raw))

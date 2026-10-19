@@ -71,8 +71,7 @@ func TestPresenceGating(t *testing.T) {
 	}
 }
 
-func TestExplicitBlankProviderStaysOff(t *testing.T) {
-	body := minimal() + "\nproviders:\n  graphicaudio:\n    url: \"\"\n  audnexus:\n    url: \"\"\n  audible:\n    base: \"\"\n"
+func TestExplicitBlankProviderStaysOff(t *testing.T) {	body := minimal() + "\nproviders:\n  graphicaudio:\n    url: \"\"\n  audnexus:\n    url: \"\"\n  audible:\n    base: \"\"\n"
 	f, err := Load(writeCfg(t, body))
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -85,5 +84,36 @@ func TestExplicitBlankProviderStaysOff(t *testing.T) {
 	}
 	if f.Providers.Audible.Base != "" {
 		t.Errorf("Audible base = %q, want blank", f.Providers.Audible.Base)
+	}
+}
+
+func TestEnvExpansion(t *testing.T) {
+	t.Setenv("RHAPSODE_TEST_SECRET", "s3cret")
+	f, err := Load(writeCfg(t, minimal()+`
+sources:
+  slskd:
+    url: http://x
+    api_key: ${RHAPSODE_TEST_SECRET}
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if f.Sources.Slskd.APIKey != "s3cret" {
+		t.Errorf("api_key = %q, want expanded secret", f.Sources.Slskd.APIKey)
+	}
+}
+
+func TestMissingEnvExpandsToEmpty(t *testing.T) {
+	f, err := Load(writeCfg(t, minimal()+`
+sources:
+  slskd:
+    url: http://x
+    api_key: ${RHAPSODE_DEFINITELY_UNSET_VAR}
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if f.Sources.Slskd.APIKey != "" {
+		t.Errorf("api_key = %q, want empty (unset var disables the piece)", f.Sources.Slskd.APIKey)
 	}
 }
