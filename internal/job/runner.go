@@ -956,6 +956,11 @@ func (r *Runner) ConfirmTags(ctx context.Context, jobID string, m tag.Metadata) 
 }
 
 // tagStaged writes the library metadata contract onto the merged file.
+//
+// One retry on tool failure: tone occasionally crashes transiently (a null
+// reference on first open that passes on retry with identical input), and
+// failing the job — with a push alert — on a flake wastes a verified,
+// merged download. A second consecutive failure is real and fails the job.
 func (r *Runner) tagStaged(ctx context.Context, j *store.Job) error {
 	if r.tagger == nil {
 		return nil // not wired in this deployment shape; park
@@ -964,7 +969,7 @@ func (r *Runner) tagStaged(ctx context.Context, j *store.Job) error {
 		return r.fail(j, "tagging: no merged file recorded")
 	}
 
-	err := r.tagger.Tag(ctx, j.Phase, tag.Metadata{
+	meta := tag.Metadata{
 		Title:          j.Title,
 		Author:         j.Author,
 		Series:         j.Series,
@@ -974,9 +979,13 @@ func (r *Runner) tagStaged(ctx context.Context, j *store.Job) error {
 		PublishedYear:  j.PublishedYear,
 		Description:    j.Description,
 		Genre:          j.Genre,
-	})
-	if err != nil {
-		return r.fail(j, "tagging failed: "+err.Error())
+	}
+	if err := r.tagger.Tag(ctx, j.Phase, meta); err != nil {
+		_ = r.st.AddEvent(j.ID, "tag", "first tag attempt failed, retrying: "+err.Error())
+		if err2 := r.tagger.Tag(ctx, j.Phase, meta); err2 != nil {
+			return r.fail(j, "tagging failed twice: "+err2.Error())
+		}
+		_ = r.st.AddEvent(j.ID, "tag", "retry succeeded")
 	}
 	_ = r.st.AddEvent(j.ID, "tag", "library metadata written")
 

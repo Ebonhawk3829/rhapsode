@@ -724,3 +724,34 @@ func TestClaimOrphan(t *testing.T) {
 		t.Errorf("source = %q, want rescue", got.Source)
 	}
 }
+
+func TestTagRetryOnTransient(t *testing.T) {
+	g := &fakeGrabber{name: "slskd", kinds: source.P2P}
+	r, st := singleOfferRunner(t, g)
+	calls := 0
+	tg := tag.New()
+	tg.SetRunner(func(context.Context, []string) error {
+		calls++
+		if calls == 1 {
+			return fmt.Errorf("tone: exit status 255")
+		}
+		return nil
+	})
+	r.SetTagger(tg)
+	j := seedJob(t, st)
+	j.State = store.Tagging
+	j.Phase = "/tmp/x.m4b"
+	if err := st.Update(j); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.advance(context.Background(), j); err != nil {
+		t.Fatalf("advance tagging: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("tagger called %d times, want 2 (fail then retry)", calls)
+	}
+	got, _ := st.Get(j.ID)
+	if got.State != store.Shelving {
+		t.Errorf("state = %v, want shelving (retry succeeded)", got.State)
+	}
+}
