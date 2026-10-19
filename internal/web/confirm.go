@@ -270,8 +270,12 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
   <div class="card">
     {{if eq (stateLabel .Job.State) "Queued"}}<div class="title">Queued — the next sweep picks this up.</div>
     {{else if eq (stateLabel .Job.State) "Searching"}}<div class="title">Searching {{.SearchSources}}…</div><p class="meta">Asking each source in turn; offers appear here when the search lands.</p>
-    {{else}}<div class="title">Progress {{printf "%.0f" (Mul .Job.Progress 100)}}%</div>
+    {{else if eq (stateLabel .Job.State) "Downloading"}}<div class="title">Progress {{printf "%.0f" (Mul .Job.Progress 100)}}%</div>
     <div class="bar" style="margin:.5rem 0"><div style="width:{{printf "%.0f" (Mul .Job.Progress 100)}}%"></div></div>
+    {{else if eq (stateLabel .Job.State) "Shelved"}}<div class="title">In the library</div><p class="meta">{{.Job.Phase}}</p>
+    {{else if eq (stateLabel .Job.State) "Failed"}}<div class="title">Failed</div>
+    {{else if eq (stateLabel .Job.State) "Cancelled"}}<div class="title">Cancelled</div>
+    {{else}}<div class="title">{{stateLabel .Job.State}}…</div>
     {{end}}
     {{if .GrabID}}<p class="meta">Downloading via {{.Grabber}} ({{.GrabID}})</p>{{end}}
   </div>
