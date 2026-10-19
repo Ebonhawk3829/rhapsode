@@ -75,7 +75,7 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	// Audnexus enriches the scaffolds the Audible search produces: the
 	// scraper discovers, the catalogue declares. The join lives in catalog.

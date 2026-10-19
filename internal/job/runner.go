@@ -290,16 +290,16 @@ func (r *Runner) search(ctx context.Context, j *store.Job) error {
 				RemoteDir:   c.RemoteDir,
 				ExternalURL: c.ExternalURL,
 				Files:       filesOf(c),
-				SizeBytes: c.SizeBytes,
-				Format:    c.Format,
-				Bitrate:   c.Bitrate,
+				SizeBytes:   c.SizeBytes,
+				Format:      c.Format,
+				Bitrate:     c.Bitrate,
 				// A free upload slot dominates peer ranking: the slskd
 				// source offsets slotted peers by 1000 (see
 				// slskd.freeSlotBonus) and this flag records it.
-				FreeSlot:  c.Seeders >= 1000,
-				Score:     res.Score,
-				Band:      res.Band,
-				Reasons:   res.Reasons,
+				FreeSlot: c.Seeders >= 1000,
+				Score:    res.Score,
+				Band:     res.Band,
+				Reasons:  res.Reasons,
 			}
 			if err := r.st.SaveCandidate(sc); err != nil {
 				return err

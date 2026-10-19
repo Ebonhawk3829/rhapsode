@@ -207,7 +207,7 @@ func (g *Grabber) Cancel(ctx context.Context, id grab.ID) error {
 		return nil
 	}
 	return g.call(ctx, "torrent-remove", map[string]any{
-		"ids":              []int{atoi(string(id))},
+		"ids":               []int{atoi(string(id))},
 		"delete-local-data": true,
 	}, nil)
 }

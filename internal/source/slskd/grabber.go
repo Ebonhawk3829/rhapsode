@@ -117,7 +117,8 @@ func (g *Grabber) Located(ctx context.Context, id grab.ID) ([]string, error) {
 // load fetches one batch, reporting a batch slskd does not know as nil
 // rather than an error: Unknown is a state the caller reconciles, while a
 // transport failure is an error the caller retries.
-func (g *Grabber) load(ctx context.Context, id grab.ID) (*batch, error) {	b, err := g.client.batchByID(ctx, string(id))
+func (g *Grabber) load(ctx context.Context, id grab.ID) (*batch, error) {
+	b, err := g.client.batchByID(ctx, string(id))
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {

@@ -478,7 +478,8 @@ func TestVerifyPassAdvancesToMerging(t *testing.T) {
 	}
 }
 
-func TestVerifyFailureParksBackInConfirm(t *testing.T) {	g := &fakeGrabber{name: "slskd", kinds: source.P2P, states: []grab.State{
+func TestVerifyFailureParksBackInConfirm(t *testing.T) {
+	g := &fakeGrabber{name: "slskd", kinds: source.P2P, states: []grab.State{
 		{Phase: grab.Done, Progress: 1},
 	}}
 	// Two offers: the confirmed one fails verification, the other stays on

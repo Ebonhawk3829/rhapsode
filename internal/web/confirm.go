@@ -262,8 +262,8 @@ type candidateView struct {
 	// row renders without checkboxes and the detail path never shows as a
 	// "file". The path is transport plumbing, not a download location.
 	IsTorrent bool
-	Reasons    []string
-	Files      []store.CandidateFile
+	Reasons   []string
+	Files     []store.CandidateFile
 }
 
 // handleJobPage renders one job: the candidate decision list when it is in
