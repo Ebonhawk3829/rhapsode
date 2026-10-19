@@ -213,10 +213,13 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
   {{else}}
   <p class="empty">No offers left. <a href="/jobs">Back to the queue</a>.</p>
   {{end}}
-{{else}}
+  {{else}}
   <div class="card">
-    <div class="title">Progress {{printf "%.0f" (Mul .Job.Progress 100)}}%</div>
+    {{if eq (stateLabel .Job.State) "Queued"}}<div class="title">Queued — the next sweep picks this up.</div>
+    {{else if eq (stateLabel .Job.State) "Searching"}}<div class="title">Searching {{.SearchSources}}…</div><p class="meta">Asking each source in turn; offers appear here when the search lands.</p>
+    {{else}}<div class="title">Progress {{printf "%.0f" (Mul .Job.Progress 100)}}%</div>
     <div class="bar" style="margin:.5rem 0"><div style="width:{{printf "%.0f" (Mul .Job.Progress 100)}}%"></div></div>
+    {{end}}
     {{if .GrabID}}<p class="meta">Downloading via {{.Grabber}} ({{.GrabID}})</p>{{end}}
   </div>
 {{end}}
@@ -229,10 +232,13 @@ type jobView struct {
 	Job        *store.Job
 	Confirming bool
 	TagReview  bool
-	// AutoRefresh reloads the page every 10s on progress states
-	// (downloading, verifying, merging, tagging, shelving) where there is
-	// no form state to lose. Decision states (confirm, tag-review) never
-	// auto-reload: a refresh mid-edit would wipe checkbox and field input.
+	// SearchSources names the sources being asked, for the searching card.
+	SearchSources string
+	// AutoRefresh reloads the page every 10s on queued and progress states
+	// (pending, searching, downloading, verifying, merging, tagging,
+	// shelving) where there is no form state to lose. Decision states
+	// (confirm, tag-review) never auto-reload: a refresh mid-edit would
+	// wipe checkbox and field input.
 	AutoRefresh bool
 	Sections    []*sourceSection
 	Grabber     string
@@ -289,7 +295,7 @@ func (s *Server) handleJobPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v := jobView{Job: job}
+	v := jobView{Job: job, SearchSources: strings.Join(s.requests.SourceNames(), ", ")}
 	switch job.State {
 	case store.Confirm:
 		v.Confirming = true
@@ -338,7 +344,7 @@ func (s *Server) handleJobPage(w http.ResponseWriter, r *http.Request) {
 		}
 	case store.TagReview:
 		v.TagReview = true
-	case store.Downloading, store.Verifying, store.Merging, store.Tagging, store.Shelving:
+	case store.Pending, store.Searching, store.Downloading, store.Verifying, store.Merging, store.Tagging, store.Shelving:
 		v.AutoRefresh = true
 		v.Grabber = job.Grabber
 		v.GrabID = job.GrabID

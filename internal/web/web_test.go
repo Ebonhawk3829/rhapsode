@@ -39,6 +39,7 @@ func (s *stubRequests) Cancel(_ string) (*store.Job, error) {
 	return &store.Job{ID: "job-1"}, s.cancelErr
 }
 func (s *stubRequests) Clear(string) error { return nil }
+func (s *stubRequests) SourceNames() []string { return []string{"slskd", "audiobookbay"} }
 
 func newTestServer(t *testing.T) (*Server, *store.Store, *stubRequests) {
 	t.Helper()

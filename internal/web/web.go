@@ -38,6 +38,8 @@ type RequestCreator interface {
 	Cancel(jobID string) (*store.Job, error)
 	// Clear deletes a terminal job and its candidates.
 	Clear(jobID string) error
+	// SourceNames lists the configured source names for status display.
+	SourceNames() []string
 }
 
 // Server is the HTTP surface.

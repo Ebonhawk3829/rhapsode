@@ -488,6 +488,15 @@ func (r *Runner) Clear(jobID string) error {
 	return r.st.Delete(jobID)
 }
 
+// SourceNames lists the configured source names for status display.
+func (r *Runner) SourceNames() []string {
+	names := make([]string, 0, len(r.sources))
+	for _, s := range r.sources {
+		names = append(names, s.Name())
+	}
+	return names
+}
+
 // poll checks the downloader and hands a completed transfer to verify.
 //
 // Completing the download means staging is complete — not that the copy is
