@@ -172,10 +172,15 @@ The handlers speak JSON alongside the HTML: `GET /api/search?q=`,
 ## Security
 
 There is no authentication on the web UI or API. Anyone who can reach the
-port has full control: search, download, tag, shelve, cancel, and clear. Bind
-`127.0.0.1` and reverse-proxy over a tailnet; never expose the port to a
-network you do not trust. Secrets (API keys, tokens) live in the config file
-— keep it in SOPS or equivalent, never in the repository.
+port has full control: search, download, tag, shelve, cancel, and clear.
+Bind loopback and put a reverse proxy in front; never expose the port to a
+network you do not trust.
+
+Secrets (API keys, tokens) are `${VAR}` references expanded from the
+environment at startup — pass them from your compose file or process
+environment rather than writing them into the config. An unset variable
+expands to empty, which disables that piece with a notice instead of failing
+to start. Never commit secrets to the repository.
 
 ## License
 
