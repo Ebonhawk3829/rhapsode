@@ -173,6 +173,14 @@ var jobPageHTML = template.Must(template.New("job").Funcs(template.FuncMap{
 <form method="post" action="/jobs/{{.Job.ID}}/tags">
   <h2>Review tags</h2>
   <p class="sub">Proposed from the catalogue record. Edit before confirming — tone writes exactly this.</p>
+  {{if .Warnings}}
+  <div class="banner warn" role="status">
+    <strong>Verify warnings</strong> — the staged files' tags differ from the release. Proceed if the files are right and the tags are sloppy; cancel if this is the wrong book.
+    <ul class="reasons">
+      {{range .Warnings}}<li class="{{if (startsWith . "✓")}}hit{{else}}note{{end}}">{{.}}</li>{{end}}
+    </ul>
+  </div>
+  {{end}}
   <div class="field"><label for="f-title">Title</label><input id="f-title" name="title" value="{{.Job.Title}}"></div>
   <div class="field"><label for="f-author">Author</label><input id="f-author" name="author" value="{{.Job.Author}}"></div>
   <div class="field"><label for="f-series">Series</label><input id="f-series" name="series" value="{{.Job.Series}}"></div>
@@ -277,6 +285,9 @@ type jobView struct {
 	Job        *store.Job
 	Confirming bool
 	TagReview  bool
+	// Warnings are the verify inspection's advisory reasons, shown on the
+	// tag-review screen next to the proposed tags. They gated nothing.
+	Warnings []string
 	// Rejected lists ruled-out offers with their verdicts, each restorable
 	// via the override. Verify failures land here, not in the void.
 	Rejected []*candidateView
@@ -410,6 +421,7 @@ func (s *Server) handleJobPage(w http.ResponseWriter, r *http.Request) {
 		}
 	case store.TagReview:
 		v.TagReview = true
+		v.Warnings = s.requests.VerifyWarnings(job.ID)
 	case store.Pending, store.Searching, store.Downloading, store.Verifying, store.Merging, store.Tagging, store.Shelving:
 		v.AutoRefresh = true
 		v.Grabber = job.Grabber

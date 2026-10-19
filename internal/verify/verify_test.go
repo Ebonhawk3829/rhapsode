@@ -56,31 +56,36 @@ func TestInspectAcceptsTheRightRelease(t *testing.T) {
 	}
 }
 
-func TestInspectRejectsWrongTitle(t *testing.T) {
+func TestInspectWarnsOnWrongTitle(t *testing.T) {
+	// A wrong title warns loudly but never blocks: the human decides at
+	// tag review whether the file is the book.
 	wrong := strings.Replace(gaDump, `"The Emperor's Soul",`, `"Some Other Book",`, 1)
 	report, err := verifierWith(wrong).Inspect([]string{"/staged/book.m4b"}, gaRelease())
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if report.OK {
-		t.Errorf("a wrong-title download passed: %v", report.Reasons)
+	if !report.OK {
+		t.Errorf("advisory inspection reports OK always: %v", report.Reasons)
 	}
 	joined := strings.Join(report.Reasons, ";")
 	if !strings.Contains(joined, "title tag") {
-		t.Errorf("verdict does not name the title mismatch: %v", report.Reasons)
+		t.Errorf("warnings do not name the title mismatch: %v", report.Reasons)
 	}
 }
 
-func TestInspectRejectsWrongNarrator(t *testing.T) {
-	// A standard narration tagged where a GA dramatisation was requested is
-	// the wrong edition — hard failure, not a soft miss.
+func TestInspectWarnsOnWrongNarrator(t *testing.T) {
+	// A standard narration tagged where a GA dramatisation was requested
+	// warns — the human checks the edition at tag review.
 	wrong := strings.Replace(gaDump, `"narrator": "GraphicAudio"`, `"narrator": "Simon Vance"`, 1)
 	report, err := verifierWith(wrong).Inspect([]string{"/staged/book.m4b"}, gaRelease())
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if report.OK {
-		t.Errorf("a wrong-edition download passed: %v", report.Reasons)
+	if !report.OK {
+		t.Errorf("advisory inspection reports OK always: %v", report.Reasons)
+	}
+	if !strings.Contains(strings.Join(report.Reasons, ";"), "narrator tag") {
+		t.Errorf("warnings do not name the narrator mismatch: %v", report.Reasons)
 	}
 }
 
@@ -100,14 +105,17 @@ func TestInspectToleratesMissingNarratorTag(t *testing.T) {
 	}
 }
 
-func TestInspectRejectsAbridgedEdition(t *testing.T) {
+func TestInspectWarnsOnAbridgedEdition(t *testing.T) {
 	abridged := strings.Replace(gaDump, `"title": "The Emperor's Soul"`, `"title": "The Emperor's Soul (Abridged)"`, 1)
 	report, err := verifierWith(abridged).Inspect([]string{"/staged/book.m4b"}, gaRelease())
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if report.OK {
-		t.Errorf("an abridged edition passed: %v", report.Reasons)
+	if !report.OK {
+		t.Errorf("advisory inspection reports OK always: %v", report.Reasons)
+	}
+	if !strings.Contains(strings.Join(report.Reasons, ";"), "abridged") {
+		t.Errorf("warnings do not flag the abridgement: %v", report.Reasons)
 	}
 }
 
@@ -152,9 +160,9 @@ func TestInspectAcceptsCoNarratedTag(t *testing.T) {
 	}
 }
 
-func TestInspectEveryFileMustPass(t *testing.T) {
-	// A batch with one wrong-titled part is a wrong download, not a partial
-	// success.
+func TestInspectInspectsEveryFile(t *testing.T) {
+	// Every file is inspected so the report carries the full evidence;
+	// a wrong-titled part warns alongside the good ones.
 	dumps := map[string]string{
 		"/staged/part1.m4b": gaDump,
 		"/staged/part2.m4b": strings.Replace(gaDump, `"The Emperor's Soul",`, `"Wrong Book",`, 1),
@@ -164,8 +172,11 @@ func TestInspectEveryFileMustPass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if report.OK {
-		t.Errorf("a batch with one wrong part passed: %v", report.Reasons)
+	if !report.OK {
+		t.Errorf("advisory inspection reports OK always: %v", report.Reasons)
+	}
+	if !strings.Contains(strings.Join(report.Reasons, ";"), "Wrong Book") {
+		t.Errorf("warnings do not carry the wrong part's evidence: %v", report.Reasons)
 	}
 }
 

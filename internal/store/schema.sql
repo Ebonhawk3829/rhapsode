@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS job (
     phase         TEXT NOT NULL DEFAULT '',
     progress      REAL NOT NULL DEFAULT 0,
     attempts      INTEGER NOT NULL DEFAULT 0,
-    error         TEXT NOT NULL DEFAULT ''
+    error         TEXT NOT NULL DEFAULT '',
+    -- Latest verify warnings (JSON): advisory display for tag review.
+    verify_json   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS job_state_idx ON job (state);

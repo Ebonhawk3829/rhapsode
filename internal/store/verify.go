@@ -91,3 +91,33 @@ type Orphan struct {
 	// SizeBytes totals the audio members.
 	SizeBytes int64
 }
+
+// SaveVerifyWarnings persists the latest inspection's reasons on the job
+// row for the tag-review screen. Verify advises; the warnings are display,
+// not state.
+func (s *Store) SaveVerifyWarnings(jobID string, reasons []string) error {
+	raw, err := json.Marshal(reasons)
+	if err != nil {
+		return fmt.Errorf("marshal warnings: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE job SET verify_json = ? WHERE id = ?`, string(raw), jobID); err != nil {
+		return fmt.Errorf("save warnings for %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// VerifyWarnings returns the latest inspection's reasons, or nil.
+func (s *Store) VerifyWarnings(jobID string) ([]string, error) {
+	var raw string
+	if err := s.db.QueryRow(`SELECT verify_json FROM job WHERE id = ?`, jobID).Scan(&raw); err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

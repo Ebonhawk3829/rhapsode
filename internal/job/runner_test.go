@@ -469,79 +469,45 @@ func TestVerifyPassAdvancesToMerging(t *testing.T) {
 	events, _ := st.Events(j.ID)
 	found := false
 	for _, e := range events {
-		if e.Kind == "verify" && strings.Contains(e.Message, "verified") {
+		if e.Kind == "verify" && strings.Contains(e.Message, "inspected") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("no verify-pass event recorded: %+v", events)
+		t.Errorf("no verify inspection recorded: %+v", events)
 	}
 }
 
-func TestVerifyFailureParksBackInConfirm(t *testing.T) {
+func TestVerifyWarningsRideToTagReview(t *testing.T) {
 	g := &fakeGrabber{name: "slskd", kinds: source.P2P, states: []grab.State{
 		{Phase: grab.Done, Progress: 1},
 	}}
-	// Two offers: the confirmed one fails verification, the other stays on
-	// the reopened confirm screen. (A single offer that fails verify fails
-	// the job — nothing remains to choose — covered by the next test.)
-	src := &fakeSource{name: "slskd", cands: []source.Candidate{
-		{Source: "slskd", Title: "copy", Format: "m4b", SizeBytes: 100 << 20, Files: []source.File{{Name: "copy/The Black Prism.m4b"}}, Handle: source.Handle{Kind: source.P2P, Ref: p2pTestRef{"peer-a"}}},
-		{Source: "slskd", Title: "second", Format: "mp3", SizeBytes: 80 << 20, Files: []source.File{{Name: "second/The Black Prism.mp3"}}, Handle: source.Handle{Kind: source.P2P, Ref: p2pTestRef{"peer-b"}}},
-	}}
-	st, err := store.Open(t.TempDir() + "/test.db")
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	r := New(st, []source.Source{src}, map[source.Kind]grab.Grabber{source.P2P: g})
-	r.SetVerifier(verify.New(func(string) (string, error) { return passingDump, nil }))
-	// The staged tags contradict the release: the wrong edition arrived.
+	r, st := singleOfferRunner(t, g)
+	// The staged tags differ from the release: advisory warnings, not a
+	// gate. The job proceeds to merging and the warnings persist for the
+	// tag-review screen.
 	r.SetVerifier(verify.New(func(string) (string, error) {
 		return `{"audio": {"duration": 1000}, "meta": {"title": "Wrong Book", "chapters": []}}`, nil
 	}))
 	j := seedJob(t, st)
 
 	got := downloadToVerifying(t, r, st, j)
-	if got.State != store.Confirm {
-		t.Fatalf("state = %v, want confirm (failed verify reopens the decision)", got.State)
+	if got.State != store.Merging {
+		t.Fatalf("state = %v, want merging (verify advises, never gates)", got.State)
 	}
-	// The stale banner is cleared: the verdict lives on the rejected row
-	// and in the audit trail, not repeated above the live offers.
-	if got.Error != "" {
-		t.Errorf("error = %q, want empty (verdict is on the rejected row)", got.Error)
+	warns, err := st.VerifyWarnings(j.ID)
+	if err != nil {
+		t.Fatalf("warnings: %v", err)
 	}
-	// The confirmed candidate carries the verify verdict: rejected_at is
-	// stamped, while the confirmation stamp stays as the historical record
-	// of what was tried and failed (the Candidates query keeps confirmed
-	// rows visible so the job page still shows what went wrong). The
-	// surviving offer remains selectable.
-	cands, _ := st.Candidates(j.ID, 0)
-	if len(cands) != 2 {
-		t.Fatalf("candidates = %d, want the failed offer and the survivor", len(cands))
-	}
-	var rejected, selectable int
-	for _, c := range cands {
-		if !c.RejectedAt.IsZero() {
-			rejected++
-			if c.ConfirmedAt.IsZero() {
-				t.Error("the offending candidate lost its confirmation record")
-			}
-		} else {
-			selectable++
-		}
-	}
-	if rejected != 1 || selectable != 1 {
-		t.Errorf("rejected = %d, selectable = %d, want 1 and 1", rejected, selectable)
-	}
-	// Only the survivor is an available offer.
-	left, _ := st.CandidateCount(j.ID)
-	if left != 1 {
-		t.Errorf("candidate count = %d, want 1 (the failed offer is off the table)", left)
+	if len(warns) == 0 {
+		t.Error("no warnings persisted for tag review")
 	}
 }
 
 func TestVerifyFailureWithNoOffersFailsJob(t *testing.T) {
+	// Structural failure (no staged files) still fails: nothing inspected
+	// means nothing to merge. Advisory applies to mismatched tags, not to
+	// missing bytes.
 	g := &fakeGrabber{name: "slskd", kinds: source.P2P, states: []grab.State{
 		{Phase: grab.Done, Progress: 1},
 	}}
@@ -552,14 +518,12 @@ func TestVerifyFailureWithNoOffersFailsJob(t *testing.T) {
 	j := seedJob(t, st)
 
 	got := downloadToVerifying(t, r, st, j)
-	if got.State != store.Failed {
-		t.Fatalf("state = %v, want failed (the last offer failed verification)", got.State)
-	}
-	if !strings.Contains(got.Error, "no candidates remain") {
-		t.Errorf("error = %q, want the exhausted-offers reason", got.Error)
+	if got.State != store.Merging {
+		t.Fatalf("state = %v, want merging (tag mismatch is advisory)", got.State)
 	}
 }
 
+// fakeOwnedChecker scripts the duplicate guard.
 // fakeOwnedChecker scripts the duplicate guard.
 type fakeOwnedChecker struct {
 	owned bool

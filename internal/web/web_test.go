@@ -51,6 +51,7 @@ func (s *stubRequests) ClaimOrphan(context.Context, string, string) (*store.Job,
 	return &store.Job{ID: "job-1"}, nil
 }
 func (s *stubRequests) OnDisk(string, []store.CandidateFile) bool { return false }
+func (s *stubRequests) VerifyWarnings(string) []string            { return nil }
 
 func newTestServer(t *testing.T) (*Server, *store.Store, *stubRequests) {
 	t.Helper()

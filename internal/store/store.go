@@ -79,7 +79,7 @@ func (s *Store) migrate() error {
 	if err := cols.Err(); err != nil {
 		return fmt.Errorf("inspect job table: %w", err)
 	}
-	for _, col := range []string{"confirmed_candidate_id", "published_year", "description", "genre"} {
+	for _, col := range []string{"confirmed_candidate_id", "published_year", "description", "genre", "verify_json"} {
 		if !have[col] {
 			if _, err := s.db.Exec(
 				`ALTER TABLE job ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {

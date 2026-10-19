@@ -55,6 +55,8 @@ type RequestCreator interface {
 	Orphans() ([]store.Orphan, error)
 	// ClaimOrphan attaches an orphan dir's audio to a job in confirm.
 	ClaimOrphan(ctx context.Context, jobID, slug string) (*store.Job, error)
+	// VerifyWarnings returns the latest inspection's advisory reasons.
+	VerifyWarnings(jobID string) []string
 }
 
 // Server is the HTTP surface.

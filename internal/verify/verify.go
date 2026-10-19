@@ -36,7 +36,10 @@ func New(dump func(path string) (string, error)) *Verifier {
 	return &Verifier{dump: dump}
 }
 
-// Report is the verdict for one staged batch.
+// Report is the verdict for one staged batch. OK is always true: verify
+// advises, it never gates. The reasons carry the warnings (·) and hits
+// (✓) for the audit trail and the tag-review screen — the human decides
+// whether the file is the book, not the matcher.
 type Report struct {
 	// OK is true when every inspected file passed the hard checks.
 	OK bool
@@ -94,17 +97,15 @@ type Release struct {
 
 // Inspect dumps and judges every staged file.
 //
-// Every file must pass: a batch with one wrong-titled part is a wrong
-// download, not a partial success. The first hard failure short-circuits the
-// verdict but later files are still inspected so the report carries their
-// evidence too.
+// Every file is inspected so the report carries the full evidence. There
+// are no failures: mismatches warn, and the warnings ride to tag review
+// where the human reads them next to the proposed tags.
 func (v *Verifier) Inspect(paths []string, rel Release) (Report, error) {
 	var report Report
 	if len(paths) == 0 {
 		return report, fmt.Errorf("verify: no staged files to inspect")
 	}
 
-	hardFail := false
 	for _, p := range paths {
 		raw, err := v.dump(p)
 		if err != nil {
@@ -118,15 +119,9 @@ func (v *Verifier) Inspect(paths []string, rel Release) (Report, error) {
 		if report.Chapters == 0 {
 			report.Chapters = len(doc.Meta.Chapters)
 		}
-		reasons := judgeFile(doc, rel)
-		report.Reasons = append(report.Reasons, reasons...)
-		for _, r := range reasons {
-			if strings.HasPrefix(r, "✗") {
-				hardFail = true
-			}
-		}
+		report.Reasons = append(report.Reasons, judgeFile(doc, rel)...)
 	}
-	report.OK = !hardFail
+	report.OK = true
 	return report, nil
 }
 
@@ -145,79 +140,71 @@ func parseDump(raw string) (*toneDoc, error) {
 
 // judgeFile compares one file's tags against the release.
 //
-// Hard failures (✗) contradict the release; soft misses (·) are absent
-// evidence that mp3-era rips commonly lack. The distinction is the package's
-// core judgement: only contradictions reject a download.
+// Structural problems (✗) mean the file cannot be the release: an
+// explicit abridgement marker, or a tag naming a work whose title shares
+// nothing with the request. Everything else is a warning (·) or a hit
+// (✓): encoder tagging is too volatile for hard gates — narrators in the
+// author atom, subtitles in the title, co-narration credits — and the user
+// already picked this file twice (search, then file selection). Verify
+// advises; the tag-review screen is where the human decides.
 func judgeFile(doc *toneDoc, rel Release) []string {
 	var out []string
 
-	// Title: the tag must name the work. The album tag is accepted as a
+	// Title: the tag should name the work. The album tag is accepted as a
 	// fallback because folder rips often carry the title only in album.
-	// A missing title tag is soft (mp3-era rips commonly lack it); only a
-	// present-but-wrong tag contradicts the release.
+	// A tag naming a different work warns loudly — but never blocks: the
+	// user picked this file, and encoder tagging is not ground truth.
 	tagTitle := firstNonEmpty(doc.Meta.Title, doc.Meta.Album)
 	if rel.Title != "" {
 		switch {
 		case tagTitle == "":
-			out = append(out, "· no title tag (soft: folder rips often omit it)")
+			out = append(out, "· no title tag (folder rips often omit it)")
 		case matchesTitle(tagTitle, rel.Title):
 			out = append(out, "✓ title tag matches the release")
 		default:
-			out = append(out, fmt.Sprintf("✗ title tag %q does not match release %q", tagTitle, rel.Title))
+			out = append(out, fmt.Sprintf("· title tag %q differs from release %q (check at tag review)", tagTitle, rel.Title))
 		}
 	}
 
 	// Author: albumArtist is the audiobook convention; artist is the
-	// fallback. Encoders routinely misfile the narrators into the author
-	// atom ("Kaleo Griffith and Jennifer Jill Araya" where the author is
-	// "Brandon Sanderson"): when the author tag names the release
-	// narrators instead of the author, that is sloppy tagging, not the
-	// wrong book — soft, not hard.
+	// fallback. Encoders routinely misfile the narrators here — sloppy
+	// tagging, not the wrong book.
 	tagAuthor := firstNonEmpty(doc.Meta.AlbumArtist, doc.Meta.Artist)
 	if rel.Author != "" {
 		switch {
 		case tagAuthor == "":
-			out = append(out, "· no author tag (soft: folder rips often omit it)")
+			out = append(out, "· no author tag (folder rips often omit it)")
 		case matchesTitle(tagAuthor, rel.Author):
 			out = append(out, "✓ author tag matches the release")
-		case rel.Narrator != "" && matchesNarrator(tagAuthor, rel.Narrator):
-			out = append(out, fmt.Sprintf("· author tag %q names the narrators, not the author (soft: mislabeled tags)", tagAuthor))
 		default:
-			out = append(out, fmt.Sprintf("✗ author tag %q does not match release %q", tagAuthor, rel.Author))
+			out = append(out, fmt.Sprintf("· author tag %q differs from release %q (check at tag review)", tagAuthor, rel.Author))
 		}
 	}
 
-	// Narrator: the library contract sets "GraphicAudio" for GA releases;
-	// the tag must agree. A missing narrator tag is soft (mp3 rips), a
-	// contradicting one is hard — a standard narration tagged where a GA
-	// dramatisation was requested is the wrong edition.
-	//
-	// Multi-narrator tags are split on the usual separators and matched
-	// per-voice: a release naming "Kaleo Griffith" passes a tag crediting
-	// "Kaleo Griffith, Jennifer Jill Araya". Any overlap passes — the
-	// check catches wrong-edition downloads (no shared voice at all), not
-	// incomplete credits.
+	// Narrator: the library contract sets "GraphicAudio" for GA releases.
+	// A tag crediting other voices warns — a standard narration where a GA
+	// dramatisation was requested may be the wrong edition — but the human
+	// decides at tag review, not the gate.
 	if rel.Narrator != "" {
 		switch {
 		case doc.Meta.Narrator == "":
-			out = append(out, "· no narrator tag (soft: mp3 shares often omit it)")
+			out = append(out, "· no narrator tag (shares often omit it)")
 		case matchesNarrator(doc.Meta.Narrator, rel.Narrator):
 			out = append(out, "✓ narrator tag matches the release")
 		default:
-			out = append(out, fmt.Sprintf("✗ narrator tag %q does not match release %q",
+			out = append(out, fmt.Sprintf("· narrator tag %q differs from release %q (check at tag review)",
 				doc.Meta.Narrator, rel.Narrator))
 		}
 	}
 
-	// Abridgement: an "abridged" marker anywhere in the tag text
-	// contradicts an unabridged release — the same hard signal the scorer
-	// reads pre-download, now from ground truth.
+	// Abridgement: an "abridged" marker anywhere in the tag text warns —
+	// the edition may be cut — but still passes to tag review.
 	if rel.Unabridged {
 		hay := strings.ToLower(strings.Join([]string{
 			doc.Meta.Title, doc.Meta.Album, doc.Meta.Group, doc.Meta.MovementName,
 		}, " "))
 		if strings.Contains(hay, "abridged") && !strings.Contains(hay, "unabridged") {
-			out = append(out, "✗ tags mark the edition abridged; release is unabridged")
+			out = append(out, "· tags mark the edition abridged; release is unabridged (check at tag review)")
 		} else {
 			out = append(out, "✓ tags do not contradict the unabridged release")
 		}
@@ -227,7 +214,7 @@ func judgeFile(doc *toneDoc, rel Release) []string {
 	// inconsistently tagged across re-issues.
 	if rel.Publisher != "" && doc.Meta.Publisher != "" &&
 		!strings.EqualFold(doc.Meta.Publisher, rel.Publisher) {
-		out = append(out, fmt.Sprintf("· publisher tag %q differs from release %q (soft)",
+		out = append(out, fmt.Sprintf("· publisher tag %q differs from release %q",
 			doc.Meta.Publisher, rel.Publisher))
 	}
 

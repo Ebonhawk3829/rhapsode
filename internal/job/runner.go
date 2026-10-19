@@ -856,16 +856,17 @@ func (r *Runner) verifyStaged(ctx context.Context, j *store.Job) error {
 		return fmt.Errorf("verify: %w", err)
 	}
 
-	if !report.OK {
-		reason := "verification failed: " + firstNegative(report.Reasons)
-		if err := r.st.AddEvent(j.ID, "verify", reason+"; "+fmt.Sprintf("%d files inspected", len(paths))); err != nil {
-			return err
-		}
-		return r.parkBackInConfirm(j, reason, report.Reasons)
+	// Verify advises, it never gates. The warnings persist on the job row
+	// for the tag-review screen, where the human reads them next to the
+	// proposed tags — the user already picked this file twice, and
+	// encoder tagging is not ground truth worth overruling them with.
+	// Structural failures (no files, unreadable dumps, empty archives)
+	// errored above; everything that inspects proceeds to merging.
+	if err := r.st.SaveVerifyWarnings(j.ID, report.Reasons); err != nil {
+		return err
 	}
-
 	_ = r.st.AddEvent(j.ID, "verify", fmt.Sprintf(
-		"verified %d files (%s audio, %d chapters)",
+		"inspected %d files (%s audio, %d chapters)",
 		len(paths), verify.DurationString(report.DurationMS), report.Chapters))
 
 	j.State = store.Merging
@@ -902,6 +903,17 @@ func (r *Runner) mergeStaged(ctx context.Context, j *store.Job) error {
 		return err
 	}
 	return r.st.AddEvent(j.ID, "tag-review", "merged; tags await review")
+}
+
+// VerifyWarnings returns the latest verify inspection's reasons for the
+// tag-review screen. The warnings advise the human next to the proposed
+// tags; they gated nothing to get here.
+func (r *Runner) VerifyWarnings(jobID string) []string {
+	w, err := r.st.VerifyWarnings(jobID)
+	if err != nil {
+		return nil
+	}
+	return w
 }
 
 // ConfirmTags applies the user's reviewed tags and advances to shelving.
@@ -1145,40 +1157,6 @@ func (r *Runner) notify(ctx context.Context, title, message string) {
 	}
 }
 
-// parkBackInConfirm reopens the confirm screen after a failed verification:
-// the confirmed candidate is rejected with the verdict recorded, and the job
-// returns to confirm where the remaining offers await the user. The stale
-// error banner is cleared: the verdict lives on the rejected row, and a
-// banner repeating it above the live offers reads as if the job itself is
-// broken rather than one offer having been ruled out.
-func (r *Runner) parkBackInConfirm(j *store.Job, reason string, verdict []string) error {
-	if j.ConfirmedCandidateID != "" {
-		if err := r.st.RejectConfirmedCandidate(j.ID, j.ConfirmedCandidateID, verdict); err != nil {
-			return err
-		}
-	}
-	j.State = store.Confirm
-	j.ConfirmedCandidateID = ""
-	j.GrabID = ""
-	j.Phase = ""
-	j.Progress = 0
-	j.Error = ""
-	if err := r.st.Update(j); err != nil {
-		return err
-	}
-	left, err := r.st.CandidateCount(j.ID)
-	if err != nil {
-		return err
-	}
-	if left == 0 {
-		// The verdict still matters when nothing remains: the job fails
-		// with the reason so the failure names the cause, but the banner
-		// only shows on terminal states — confirm screens stay clean.
-		return r.fail(j, reason+"; no candidates remain")
-	}
-	return r.st.AddEvent(j.ID, "verify", fmt.Sprintf("candidate rejected (%s); %d offers remain on the confirm screen", reason, left))
-}
-
 // verifyReleaseOf maps the stored job onto the verify contract.
 func verifyReleaseOf(j *store.Job) verify.Release {
 	return verify.Release{
@@ -1190,16 +1168,6 @@ func verifyReleaseOf(j *store.Job) verify.Release {
 		Publisher:      j.Publisher,
 		Unabridged:     true,
 	}
-}
-
-// firstNegative returns the first hard-failure reason for the audit line.
-func firstNegative(reasons []string) string {
-	for _, r := range reasons {
-		if strings.HasPrefix(r, "✗") {
-			return strings.TrimPrefix(r, "✗ ")
-		}
-	}
-	return "unknown mismatch"
 }
 
 // fail marks a job failed with a reason and an audit entry. The job's
