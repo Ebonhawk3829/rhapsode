@@ -4,7 +4,7 @@
 
 # rhapsode
 
-An audiobook request platform. Search once across catalogues, pick the edition, pick the copy — verified, merged, tagged, and shelved into your library.
+An example of how an audiobook request pipeline can be built: one search across catalogues, ranked copies, verified downloads, reviewed tags, shelved books.
 
 [![Release](https://img.shields.io/github/v/release/Ebonhawk3829/rhapsode?style=flat-square)](https://github.com/Ebonhawk3829/rhapsode/releases)
 [![Docker Image](https://img.shields.io/badge/ghcr.io-ebonhawk3829%2Frhapsode-blue?style=flat-square&logo=docker)](https://github.com/Ebonhawk3829/rhapsode/pkgs/container/rhapsode)
@@ -15,22 +15,27 @@ An audiobook request platform. Search once across catalogues, pick the edition, 
 
 ---
 
-rhapsode takes an audiobook request from search to shelf: catalogue metadata
-confirms the edition, sources offer copies ranked by match evidence, a
-downloader fetches your pick, and the file is verified against the release,
-merged to a single m4b, tagged with your review, and shelved into
-Audiobookshelf.
+This is a worked example, not a turnkey app. It shows one way to stitch
+together catalogue search, source ranking, download tracking, tag verification,
+and library shelving into a coherent tool — take the patterns, adapt the
+pieces to your own stack.
 
-| Stage | What happens |
+| Stage | Idea |
 |---|---|
-| **Search** | Omnisearch across GraphicAudio, Audible, and Audnexus by author, series, title, ISBN, or ASIN |
-| **Confirm** | Pick the edition, then pick the copy from ranked slskd and AudioBookBay offers |
-| **Grab** | Hands the selection to slskd or Transmission and tracks it to completion |
-| **Verify** | Dumps the staged files' tags with tone and checks them against the release |
-| **Merge** | Combines parts into one m4b with m4b-tool (no re-encode) |
-| **Review** | Proposes tags from the catalogue record; you edit and confirm before anything is written |
-| **Shelve** | Copies into the `Author/Series/Title` library layout and triggers an ABS scan |
-| **Clean** | Removes the download directory on success, failure, or cancel, plus a startup sweep for crash debris |
+| **Search** | One omnisearch across metadata catalogues by author, series, title, ISBN, or ASIN |
+| **Confirm** | Pick the edition, then pick the copy from offers ranked by match evidence |
+| **Grab** | Hand the selection to a downloader and track it to completion |
+| **Verify** | Check the staged files' own tags against the release before trusting them |
+| **Merge** | Combine parts into one file without re-encoding |
+| **Review** | Propose tags from the catalogue record; require human edit-and-confirm |
+| **Shelve** | Copy into a deterministic library layout and trigger a rescan |
+| **Clean** | Remove scratch on every terminal path, plus a startup sweep for crash debris |
+
+Adaptation points: the catalogue providers, the sources, the downloaders, the
+tagging tools, and the library layout are all interfaces. The interesting
+decisions — scoring within a source instead of across them, verifying embedded
+tags instead of trusting share text, blocking on tag review — transfer to any
+stack.
 
 ## Contents
 
@@ -47,31 +52,40 @@ Audiobookshelf.
 
 ## Status
 
-rhapsode handles audiobook requests for one person.
+Built for one homelab, published as inspiration.
 
 Releases follow semver. Patch releases are safe to take unread. Minor releases
 may add configuration keys; existing ones keep working. A major release may
 change behaviour, and the release notes will say so.
 
-What it does not do:
+What it assumes:
 
-- **Serve multiple users.** No auth, no permissions model. See [Security](#security).
-- **Compare sources against each other.** slskd and AudioBookBay rank on different evidence; scores compare within a source, and the UI sections them separately.
-- **Write tags without review.** The tag step always parks for your edit and confirm.
+- **One user.** No auth, no permissions model. See [Security](#security).
+- **A specific stack.** slskd, Transmission, FlareSolverr, Audiobookshelf,
+  m4b-tool, tone — each behind an interface, but the defaults name these tools.
+- **Human review.** The tag step always parks for edit and confirm; scores
+  advise, they never decide across sources.
 
 ## Requirements
 
-- A Soulseek client (**slskd**) and/or a torrent client (**Transmission**).
-- A self-hosted **GraphicAudio scraper** for dramatisation metadata (optional but first in query order).
-- **FlareSolverr** for the Audible scrape and AudioBookBay (both bot-wall datacentre IPs).
-- **Audiobookshelf** for duplicate detection and the post-shelve scan.
-- `m4b-tool` and `tone` — provided by the Docker image.
-- Go 1.27+ if building from source. Docker needs nothing else.
-- Optionally, **ntfy** for failure and shelved alerts.
+The shape of the stack, not a shopping list:
+
+- Download clients with remote APIs (here: slskd and Transmission).
+- Metadata catalogues (here: a GraphicAudio scraper, Audible search, Audnexus).
+- A challenge solver where the network needs one (here: FlareSolverr).
+- A library with a scan API (here: Audiobookshelf).
+- Audio tooling in the image (`m4b-tool` for merging, `tone` for tags).
+- Go 1.27+ to build from source; Docker needs nothing else.
+- Optionally, a push endpoint for alerts (here: ntfy).
 
 ## Installation
 
 ### Docker Compose
+
+The example below is one deployment, not a universal template — adjust image
+tag, paths, and user to your setup. The pattern that matters: one mount for
+the downloads tree the downloaders write, local scratch for audio work, and
+the library where your reader watches.
 
 ```yaml
 services:
@@ -81,8 +95,8 @@ services:
     volumes:
       - ./config:/data            # database and config file
       - ./downloads:/downloads    # shared downloads tree (same host dir the downloaders write)
-      - ./staging:/staging        # local scratch for merging (must be local block storage)
-      - ./library:/library        # finished library (ABS reads this too)
+      - ./staging:/staging        # local scratch for merging (local block storage, not a network mount)
+      - ./library:/library        # finished library (your reader watches this too)
     ports:
       - "127.0.0.1:8099:8099"
     restart: unless-stopped
@@ -91,50 +105,46 @@ services:
       - "/data/rhapsode.yaml"
 ```
 
-Then open **http://localhost:8099**, search, and request. Copy
-`rhapsode.yaml.example` to `./config/rhapsode.yaml` and fill in the service
-URLs and keys first — blank details mean that piece is off, and the UI says
-so with a degraded banner rather than failing silently.
+Copy `rhapsode.yaml.example` to your config dir and fill in service URLs and
+keys. Blank details mean that piece is off, and the UI says so with a
+degraded banner rather than failing silently.
 
-Three things about that compose file:
+Deployment notes worth stealing:
 
-**Mount the same downloads tree the downloaders write.** slskd resolves
-destinations under its own root (`/downloads/slskd-complete` in slskd.yml);
-rhapsode reads the same tree through `/downloads`. Both must see the same
-host directory or verification cannot find completed files.
+**Share one downloads tree.** Whatever the downloaders write must be readable
+at the same relative paths — verification locates files through the
+transport's own API, translated across mount views.
 
-**Keep staging on local block storage.** `tone` targets local filesystems,
-not network mounts.
+**Keep audio scratch local.** Tag tooling targets local filesystems, not
+network mounts.
 
 **Bind loopback and reverse-proxy.** There is no authentication; expose the
-port through Caddy or a tailnet, never directly.
+port through a tailnet or proxy, never directly.
 
 ## Configuration
 
-Copy `rhapsode.yaml.example` to `rhapsode.yaml`. Every value shown is the
-default; a minimal file names only what it uses. Presence is the switch: a
-component with its connection details filled in is on, blank them to turn it
-off. There are no `enabled` flags.
+Copy `rhapsode.yaml.example` to `rhapsode.yaml`. A minimal file names only
+what it uses. Presence is the switch: a component with its connection details
+filled in is on, blank them to turn it off. There are no `enabled` flags.
 
-The region chain matters: the Audible storefront base must be the one your
-server's IP geo-lands on (`.com.au` from a datacentre box — a `.com` base
-geo-redirects to the home page and the parser finds nothing), and the
-Audnexus region must agree with it (ASINs are per-region; an AU ASIN looked
-up in the US catalogue 404s).
+One subtlety worth knowing if you adapt the catalogue code: storefront
+regions must agree end to end. A geo-redirected search base returns the wrong
+page silently, and per-region identifiers looked up in the wrong catalogue
+404 — both degrade to thin results rather than errors.
 
 ## How matching works
 
-Pre-download, the scorer grades offers on peer-typed text (slskd) or catalogue
-rows (ABB): title, author, narrator, series, part structure, format, and
-audio-file presence. Companion-only shares (covers, epubs) are flagged, not
-hidden. Scores compare within a source — the confirm screen sections offers
-by source so a torrent and a live peer are never fused into one number.
+Two comparisons, two directions:
 
-Post-download, the verifier dumps the staged files' own tags with tone and
-checks them against the release: title containment (subtitles pass),
-per-voice narrator overlap (co-narration passes), abridgement markers, and
-soft misses for tags folder rips commonly omit. A contradiction parks the job
-back in confirm; only matches merge, tag, and shelve.
+Pre-download, offers are graded on what the source shows — share text or
+catalogue rows: title, author, narrator, series, part structure, format, and
+whether audio files are actually present. Scores compare within a source, so
+different evidence types never fuse into one number.
+
+Post-download, the staged files' own embedded tags are checked against the
+release: title containment (subtitles pass), per-voice narrator overlap
+(co-narration passes), abridgement markers, soft misses for tags folder rips
+omit. Contradictions park the job back for another pick; only matches proceed.
 
 ## Job states
 
