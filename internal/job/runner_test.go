@@ -670,7 +670,7 @@ func TestRetryVerifyUsesLocalFiles(t *testing.T) {
 	}
 	cands, _ := st.Candidates(j.ID, 0)
 	c := cands[0]
-	audio := filepath.Join(dir, "audiobooks", j.Slug, filepath.Base(c.Files[0].Name))
+	audio := filepath.Join(dir, "slskd-complete", "audiobooks", j.Slug, filepath.Base(c.Files[0].Name))
 	if err := os.MkdirAll(filepath.Dir(audio), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -680,7 +680,7 @@ func TestRetryVerifyUsesLocalFiles(t *testing.T) {
 	if err := st.ConfirmCandidate(j.ID, c.ID, c.Files); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RejectConfirmedCandidate(j.ID, c.ID); err != nil {
+	if err := st.RejectConfirmedCandidate(j.ID, c.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := r.RetryVerify(context.Background(), j.ID, c.ID)
@@ -707,7 +707,7 @@ func TestConfirmPrefersLocalFiles(t *testing.T) {
 	}
 	cands, _ := st.Candidates(j.ID, 0)
 	c := cands[0]
-	audio := filepath.Join(dir, "audiobooks", j.Slug, filepath.Base(c.Files[0].Name))
+	audio := filepath.Join(dir, "slskd-complete", "audiobooks", j.Slug, filepath.Base(c.Files[0].Name))
 	if err := os.MkdirAll(filepath.Dir(audio), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -731,7 +731,7 @@ func TestConfirmPrefersLocalFiles(t *testing.T) {
 
 func TestClaimOrphan(t *testing.T) {
 	dir := t.TempDir()
-	orphanDir := filepath.Join(dir, "audiobooks", "stray-book")
+	orphanDir := filepath.Join(dir, "slskd-complete", "audiobooks", "stray-book")
 	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

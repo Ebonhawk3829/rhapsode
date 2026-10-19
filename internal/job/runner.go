@@ -18,6 +18,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -60,9 +61,13 @@ type Runner struct {
 	// notifier pushes the two moments the user cares about: done and
 	// failed. Nil-safe — an unconfigured deployment runs without pushes.
 	notifier *notify.Notifier
-	// downloads is rhapsode's view of the shared downloads tree. The
-	// cleaner removes audiobooks/<slug> dirs for jobs that no longer need
-	// them; empty means cleanup disabled (tests).
+	// downloads is rhapsode's view of the shared downloads tree, and the
+	// per-transport complete dirs under it. slskd lands batches in
+	// slskd-complete/audiobooks/<slug>; Transmission lands torrents in
+	// kt-complete/<name>. The cleaner, the rescue scan, and the local-file
+	// checks all resolve through these roots — never a bare
+	// <downloads>/audiobooks join, which matches neither transport.
+	// Empty means cleanup disabled (tests).
 	downloads string
 	// interval is how often the runner sweeps for work.
 	interval time.Duration
@@ -157,19 +162,37 @@ func (r *Runner) Run(ctx context.Context) {
 	}
 }
 
-// sweepOrphans removes audiobooks/<slug> dirs whose slug no live job holds.
+// slugDirs returns the slug directory for each transport root: slskd
+// nests under audiobooks/, Transmission lands torrent dirs directly under
+// kt-complete. Callers check membership, not construction.
+func (r *Runner) slugDirs(slug string) []string {
+	if r.downloads == "" || slug == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(r.downloads, "slskd-complete", "audiobooks", slug),
+		filepath.Join(r.downloads, "kt-complete", slug),
+	}
+}
+
+// completeRoots returns the transport complete dirs for the rescue scan.
+// Incomplete dirs are excluded deliberately: partial bytes are not
+// verifiable, and the downloaders move finished files to -complete alone.
+func (r *Runner) completeRoots() []string {
+	if r.downloads == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(r.downloads, "slskd-complete", "audiobooks"),
+		filepath.Join(r.downloads, "kt-complete"),
+	}
+}
+
+// sweepOrphans removes slug dirs whose slug no live job holds.
 // Terminal jobs own nothing: their dirs were removed at the transition, so
 // anything left is crash debris.
 func (r *Runner) sweepOrphans() {
 	if r.downloads == "" {
-		return
-	}
-	root := filepath.Join(r.downloads, "audiobooks")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("job: orphan sweep %s: %v", root, err)
-		}
 		return
 	}
 	jobs, err := r.st.List("")
@@ -183,32 +206,33 @@ func (r *Runner) sweepOrphans() {
 			live[j.Slug] = true
 		}
 	}
-	for _, e := range entries {
-		if !e.IsDir() || live[e.Name()] {
+	for _, root := range r.completeRoots() {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				log.Printf("job: orphan sweep %s: %v", root, err)
+			}
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
-			log.Printf("job: orphan sweep %s: %v", e.Name(), err)
-		} else {
-			log.Printf("job: orphan sweep removed %s", e.Name())
+		for _, e := range entries {
+			if !e.IsDir() || live[e.Name()] {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
+				log.Printf("job: orphan sweep %s: %v", e.Name(), err)
+			} else {
+				log.Printf("job: orphan sweep removed %s", e.Name())
+			}
 		}
 	}
 }
 
-// Orphans scans the downloads tree for directories no live job holds.
-// Crash debris and manually-copied files both surface here; the caller
-// decides which are rescues and which are rubbish.
+// Orphans scans the transport complete dirs for directories no live job
+// holds. Crash debris and manually-copied files both surface here; the
+// caller decides which are rescues and which are rubbish.
 func (r *Runner) Orphans() ([]store.Orphan, error) {
 	if r.downloads == "" {
 		return nil, nil
-	}
-	root := filepath.Join(r.downloads, "audiobooks")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
 	}
 	jobs, err := r.st.List("")
 	if err != nil {
@@ -221,22 +245,31 @@ func (r *Runner) Orphans() ([]store.Orphan, error) {
 		}
 	}
 	var out []store.Orphan
-	for _, e := range entries {
-		if !e.IsDir() || live[e.Name()] {
-			continue
-		}
-		dir := filepath.Join(root, e.Name())
-		o := store.Orphan{Slug: e.Name()}
-		for _, f := range listAudio(dir) {
-			info, err := os.Stat(f)
-			if err != nil {
+	for _, root := range r.completeRoots() {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if os.IsNotExist(err) {
 				continue
 			}
-			o.Files = append(o.Files, filepath.Base(f))
-			o.SizeBytes += info.Size()
+			return nil, err
 		}
-		if len(o.Files) > 0 {
-			out = append(out, o)
+		for _, e := range entries {
+			if !e.IsDir() || live[e.Name()] {
+				continue
+			}
+			dir := filepath.Join(root, e.Name())
+			o := store.Orphan{Slug: e.Name()}
+			for _, f := range listAudio(dir) {
+				info, err := os.Stat(f)
+				if err != nil {
+					continue
+				}
+				o.Files = append(o.Files, filepath.Base(f))
+				o.SizeBytes += info.Size()
+			}
+			if len(o.Files) > 0 {
+				out = append(out, o)
+			}
 		}
 	}
 	return out, nil
@@ -256,7 +289,20 @@ func (r *Runner) ClaimOrphan(ctx context.Context, jobID, slug string) (*store.Jo
 	if j.State != store.Confirm {
 		return nil, fmt.Errorf("job %s is in state %q, not confirm", shortID(j.ID), j.State)
 	}
-	dir := filepath.Join(r.downloads, "audiobooks", slug)
+	// Resolve the orphan dir across both transport roots: slskd slug dirs
+	// live under slskd-complete/audiobooks, torrent dirs directly under
+	// kt-complete. First hit wins.
+	var dir string
+	for _, root := range r.completeRoots() {
+		cand := filepath.Join(root, slug)
+		if st, err := os.Stat(cand); err == nil && st.IsDir() {
+			dir = cand
+			break
+		}
+	}
+	if dir == "" {
+		return nil, fmt.Errorf("no orphan dir %s under the complete roots", slug)
+	}
 	audio := listAudio(dir)
 	if len(audio) == 0 {
 		return nil, fmt.Errorf("no audio files in %s", slug)
@@ -629,13 +675,9 @@ func (r *Runner) RetryVerify(ctx context.Context, jobID, candidateID string) (*s
 	if len(files) == 0 {
 		return nil, errors.New("candidate has no files to verify")
 	}
-	paths := make([]string, 0, len(files))
-	for _, f := range files {
-		p := filepath.Join(r.downloads, "audiobooks", j.Slug, filepath.Base(f.Name))
-		if _, err := os.Stat(p); err != nil {
-			return nil, fmt.Errorf("file %s is not on disk; confirm the offer to download it", filepath.Base(f.Name))
-		}
-		paths = append(paths, p)
+	paths := r.localSelection(j, files)
+	if paths == nil {
+		return nil, fmt.Errorf("files for %s are not on disk; download the offer to fetch them", shortID(candidateID))
 	}
 	if err := r.st.Unreject(jobID, candidateID); err != nil {
 		return nil, err
@@ -819,7 +861,7 @@ func (r *Runner) verifyStaged(ctx context.Context, j *store.Job) error {
 		if err := r.st.AddEvent(j.ID, "verify", reason+"; "+fmt.Sprintf("%d files inspected", len(paths))); err != nil {
 			return err
 		}
-		return r.parkBackInConfirm(j, reason)
+		return r.parkBackInConfirm(j, reason, report.Reasons)
 	}
 
 	_ = r.st.AddEvent(j.ID, "verify", fmt.Sprintf(
@@ -976,17 +1018,29 @@ func (r *Runner) shelveStaged(ctx context.Context, j *store.Job) error {
 // returning their paths when every one exists locally, nil otherwise.
 // Basename matching is deliberate: the candidate records source-side paths
 // (peer folders, torrent members) while the slug dir holds what landed.
+// The basename itself is separator-normalised first: Windows peers report
+// backslash paths, and path.Base alone would keep the whole string as the
+// "name", never matching the landed file.
 func (r *Runner) localSelection(j *store.Job, files []store.CandidateFile) []string {
-	if r.downloads == "" || j.Slug == "" {
+	dirs := r.slugDirs(j.Slug)
+	if len(dirs) == 0 {
 		return nil
 	}
 	paths := make([]string, 0, len(files))
 	for _, f := range files {
-		p := filepath.Join(r.downloads, "audiobooks", j.Slug, filepath.Base(f.Name))
-		if _, err := os.Stat(p); err != nil {
+		base := path.Base(strings.ReplaceAll(f.Name, "\\", "/"))
+		var hit string
+		for _, dir := range dirs {
+			p := filepath.Join(dir, base)
+			if _, err := os.Stat(p); err == nil {
+				hit = p
+				break
+			}
+		}
+		if hit == "" {
 			return nil
 		}
-		paths = append(paths, p)
+		paths = append(paths, hit)
 	}
 	return paths
 }
@@ -1097,9 +1151,9 @@ func (r *Runner) notify(ctx context.Context, title, message string) {
 // error banner is cleared: the verdict lives on the rejected row, and a
 // banner repeating it above the live offers reads as if the job itself is
 // broken rather than one offer having been ruled out.
-func (r *Runner) parkBackInConfirm(j *store.Job, reason string) error {
+func (r *Runner) parkBackInConfirm(j *store.Job, reason string, verdict []string) error {
 	if j.ConfirmedCandidateID != "" {
-		if err := r.st.RejectConfirmedCandidate(j.ID, j.ConfirmedCandidateID); err != nil {
+		if err := r.st.RejectConfirmedCandidate(j.ID, j.ConfirmedCandidateID, verdict); err != nil {
 			return err
 		}
 	}
@@ -1164,16 +1218,14 @@ func (r *Runner) fail(j *store.Job, reason string) error {
 	return nil
 }
 
-// cleanup removes the job's download directory and empty parents. A removal
-// failure is logged, never fatal: leftovers cost disk, not correctness, and
-// the startup sweep retries them.
+// cleanup removes the job's download directories across both transport
+// roots. A removal failure is logged, never fatal: leftovers cost disk,
+// not correctness, and the startup sweep retries them.
 func (r *Runner) cleanup(j *store.Job) {
-	if r.downloads == "" || j.Slug == "" {
-		return
-	}
-	dir := filepath.Join(r.downloads, "audiobooks", j.Slug)
-	if err := os.RemoveAll(dir); err != nil {
-		log.Printf("job: %s: cleanup %s: %v", shortID(j.ID), dir, err)
+	for _, dir := range r.slugDirs(j.Slug) {
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("job: %s: cleanup %s: %v", shortID(j.ID), dir, err)
+		}
 	}
 }
 

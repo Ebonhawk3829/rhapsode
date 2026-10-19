@@ -193,7 +193,7 @@ func TestRejectConfirmGuards(t *testing.T) {
 	}
 	// A confirmed-then-rejected row stays visible (history) but is not
 	// re-confirmable and does not count as an offer.
-	if err := st.RejectConfirmedCandidate(j.ID, other.ID); err != nil {
+	if err := st.RejectConfirmedCandidate(j.ID, other.ID, []string{"✗ title mismatch"}); err != nil {
 		t.Fatal(err)
 	}
 	vis, _ := st.Candidates(j.ID, 0)
@@ -294,5 +294,32 @@ func TestUnreject(t *testing.T) {
 	}
 	if err := st.Unreject(j.ID, "missing"); err != ErrNotFound {
 		t.Errorf("unreject missing = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRejectConfirmedStampsVerdict(t *testing.T) {
+	st := openTest(t)
+	j := mkJob("job-verdict-88888888")
+	if err := st.Create(j); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCandidate(&Candidate{
+		JobID: j.ID, Source: "slskd", Username: "u", RemoteDir: "d",
+		Files:   []CandidateFile{{Name: "d/f.m4b"}},
+		Reasons: []string{"✓ title in share"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cands, _ := st.Candidates(j.ID, 0)
+	if err := st.ConfirmCandidate(j.ID, cands[0].ID, cands[0].Files); err != nil {
+		t.Fatal(err)
+	}
+	verdict := []string{"✓ title tag matches", "✗ author tag mismatch"}
+	if err := st.RejectConfirmedCandidate(j.ID, cands[0].ID, verdict); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.CandidateByID(j.ID, cands[0].ID)
+	if len(got.Reasons) != 2 || got.Reasons[1] != "✗ author tag mismatch" {
+		t.Errorf("reasons = %v, want the verdict not the score evidence", got.Reasons)
 	}
 }

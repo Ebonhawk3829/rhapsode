@@ -10,6 +10,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -26,11 +27,20 @@ import (
 // blocked by the rejected_at guard in ConfirmCandidate, which is the
 // default: a candidate that failed verification must not be picked twice
 // by accident. Unreject reverses it deliberately (see below).
-func (s *Store) RejectConfirmedCandidate(jobID, id string) error {
+//
+// The verdict replaces the score-time reasons: the row's evidence becomes
+// what verify found, not what the scorer predicted. Without this the
+// rejected row shows green ticks for a file that failed — exactly the
+// "zero reason why it was rejected" confusion.
+func (s *Store) RejectConfirmedCandidate(jobID, id string, verdict []string) error {
+	reasons, err := json.Marshal(verdict)
+	if err != nil {
+		return fmt.Errorf("marshal verdict: %w", err)
+	}
 	res, err := s.db.Exec(`
-		UPDATE job_candidate SET rejected_at = ?
+		UPDATE job_candidate SET rejected_at = ?, reasons_json = ?
 		WHERE job_id = ? AND id = ? AND confirmed_at != ''`,
-		ts(time.Now().UTC()), jobID, id)
+		ts(time.Now().UTC()), string(reasons), jobID, id)
 	if err != nil {
 		return fmt.Errorf("reject confirmed candidate %s: %w", id, err)
 	}
